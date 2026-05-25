@@ -1,0 +1,86 @@
+# docker-compose.test.yml — Isolated test stack.
+# NEVER shares state with docker-compose.yml (dev environment).
+#
+# Usage:
+#   ./scripts/test-api.sh          — Layer 2: backend + test-db only
+#   ./scripts/test-e2e.sh          — Layer 3: full stack
+#   ./scripts/test-e2e.sh --up     — start stack for interactive Playwright MCP session
+#
+# Teardown always uses `down -v` to wipe volumes between runs.
+
+services:
+
+  # ── Database ──────────────────────────────────────────────────────────────────
+  test-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: test          # adjust if your app expects a different user
+      POSTGRES_PASSWORD: test      # use a secrets file or CI env var in production CI
+      POSTGRES_DB: test_db         # must match DATABASE_URL in backend-test below
+    volumes:
+      - test-db-data:/var/lib/postgresql/data
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Backend ───────────────────────────────────────────────────────────────────
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile        # reuse dev Dockerfile — no separate test image needed
+    environment:
+      DATABASE_URL: postgresql://test:test@test-db:5432/test_db
+      TESTING: "true"               # tells the app to skip external integrations
+      # Add any other runtime env vars your app needs:
+      # SECRET_KEY: test-secret-key-not-for-production
+      # REDIS_URL: redis://...
+    ports:
+      - "8001:8000"                 # 8001 on host — keeps test port separate from dev (8000)
+    networks:
+      - test-net
+    depends_on:
+      test-db:
+        condition: service_healthy  # waits for pg_isready before starting
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend-test:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile        # must expose the Vite dev server on port 5173
+    environment:
+      VITE_API_URL: http://backend-test:8000   # internal Docker network URL
+    ports:
+      - "5174:5173"                 # 5174 on host — keeps test port separate from dev (5173)
+    networks:
+      - test-net
+    depends_on:
+      backend-test:
+        condition: service_healthy  # waits for /health before starting
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5173 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  test-net:
+    driver: bridge
+    # Isolated from the default dev network — test containers cannot reach
+    # dev containers or host-mapped dev ports.
+
+volumes:
+  test-db-data:
+    # Named volume so Postgres persists across container restarts within one
+    # test session. Always wiped by `down -v` at session teardown.
