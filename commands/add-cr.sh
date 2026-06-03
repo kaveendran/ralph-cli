@@ -4,6 +4,8 @@ set -euo pipefail
 
 RALPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$RALPH_DIR/lib/template.sh"
+source "$RALPH_DIR/lib/tui.sh"
+source "$RALPH_DIR/lib/rules.sh"
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 CR_NUMBER=""
@@ -25,15 +27,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ralph add-cr — scaffold a new CR"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+tui_header "add-cr — scaffold a new change request"
 
 # ── Interactive prompts for missing args ──────────────────────────────────────
 if [[ -z "$CR_NUMBER" ]]; then
-  read -rp "CR number (e.g. 22): " CR_NUMBER
+  CR_NUMBER="$(tui_input "CR number (e.g. 22)")"
 fi
 if [[ -z "$CR_NUMBER" ]] || ! [[ "$CR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "Error: CR number must be a positive integer."
@@ -41,25 +39,32 @@ if [[ -z "$CR_NUMBER" ]] || ! [[ "$CR_NUMBER" =~ ^[0-9]+$ ]]; then
 fi
 
 if [[ -z "$CR_TITLE" ]]; then
-  read -rp "CR title (short description): " CR_TITLE
+  CR_TITLE="$(tui_input "CR title (short description)")"
 fi
 if [[ -z "$CR_TITLE" ]]; then
   CR_TITLE="CR${CR_NUMBER} Implementation"
 fi
 
 if [[ -z "$IMPL_TYPE" ]]; then
-  echo "Implementation type options: backend | frontend | backend+frontend | feature | api | database | infrastructure | refactor"
-  read -rp "Implementation type [feature]: " IMPL_TYPE
+  IMPL_TYPE="$(tui_choose "Implementation type" \
+    "backend+frontend" \
+    "backend" \
+    "frontend" \
+    "feature" \
+    "api" \
+    "database" \
+    "infrastructure" \
+    "refactor")"
   IMPL_TYPE="${IMPL_TYPE:-feature}"
 fi
 
 if [[ -z "$PRIOR_CR" ]]; then
-  read -rp "Prior CR number to reference as baseline (leave blank if none): " PRIOR_CR
+  PRIOR_CR="$(tui_input "Prior CR number to reference as baseline (leave blank if none)")"
 fi
 
 if [[ "$SPECIAL_NOTES" == "(none)" ]]; then
-  read -rp "Special notes for build prompt (leave blank for none): " NOTES_INPUT
-  [[ -n "$NOTES_INPUT" ]] && SPECIAL_NOTES="$NOTES_INPUT"
+  _notes="$(tui_input "Special notes for build prompt (leave blank for none)")"
+  [[ -n "$_notes" ]] && SPECIAL_NOTES="$_notes"
 fi
 
 # ── Derived paths ─────────────────────────────────────────────────────────────
@@ -141,14 +146,10 @@ build_tech_constraints() {
 TEST_COMMANDS="$(build_test_commands "$IMPL_TYPE" "$HAS_TEST_INFRA")"
 TECH_CONSTRAINTS="$(build_tech_constraints "$IMPL_TYPE")"
 
-CRITICAL_RULES="- After completing each unit, re-read the spec and plan before picking the next one.
-- Do not mark a unit [x] until every test in its Test Plan section passes unmodified.
-- If stuck on a single blocker for more than 3 tool-call rounds, mark the unit [!] Blocked with a clear reason and move on.
-- Never skip, xfail, or comment out failing tests — fix the root cause or mark the unit blocked.
-- Schema changes must be strictly additive unless the spec explicitly requires otherwise."
+CRITICAL_RULES="$(build_layered_rules "$IMPL_TYPE")"
 
 # ── Create directory tree ─────────────────────────────────────────────────────
-echo "Creating directory tree: $CR_DIR"
+tui_section "Creating directory tree: $CR_DIR"
 mkdir -p "${CR_DIR}/spec" "${CR_DIR}/plan" "${CR_DIR}/progress" "${CR_DIR}/prompts"
 
 CREATED=0
@@ -157,11 +158,11 @@ create_file() {
   local dst="$1" src="$2"
   shift 2
   if [[ -f "$dst" ]]; then
-    echo "  SKIP  $dst (already exists)"
+    tui_log_skip "$dst (already exists)"
     return
   fi
   apply_template "$src" "$dst" "$@"
-  echo "  CREATE $dst"
+  tui_log_create "$dst"
   CREATED=$((CREATED + 1))
 }
 
@@ -221,8 +222,7 @@ create_file "$PLAN_PATH" "$RALPH_DIR/templates/plan-header.md" \
   "CREATED_DATE" "$CREATED_DATE"
 
 # ── Verify no unresolved placeholders ────────────────────────────────────────
-echo ""
-echo "Verifying generated files..."
+tui_section "Verifying generated files"
 for f in "$BUILD_PROMPT" "$PLAN_PROMPT"; do
   verify_no_placeholders "$f"
 done
@@ -230,20 +230,15 @@ done
 # ── Offer to update loop_plan.sh ──────────────────────────────────────────────
 if [[ -f "loop_plan.sh" ]]; then
   echo ""
-  read -rp "Update loop_plan.sh to point to CR${CR_NUMBER} prompts? [Y/n]: " UPDATE_LOOP
-  if [[ "${UPDATE_LOOP:-Y}" =~ ^[Yy]$ ]]; then
+  if tui_confirm "Update loop_plan.sh to point to CR${CR_NUMBER} prompts?"; then
     sed -i "s|BUILD_PROMPT_FILE=.*|BUILD_PROMPT_FILE=\"${BUILD_PROMPT}\"|" loop_plan.sh
     sed -i "s|PLAN_PROMPT_FILE=.*|PLAN_PROMPT_FILE=\"${PLAN_PROMPT}\"|" loop_plan.sh
-    echo "  UPDATED loop_plan.sh → CR${CR_NUMBER} prompts"
+    tui_log_ok "Updated loop_plan.sh → CR${CR_NUMBER} prompts"
   fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Done: $CREATED files created for CR${CR_NUMBER}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+tui_header "Done" "$CREATED files created for CR${CR_NUMBER}"
 echo "Next steps:"
 echo "  1. Edit your spec:            $SPEC_PATH"
 echo "  2. ralph status --cr ${CR_NUMBER}             (tells you what to do and what's missing)"

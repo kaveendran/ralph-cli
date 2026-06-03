@@ -3,12 +3,16 @@
 # Usage: ralph <command> [options]
 #
 # Commands:
-#   init       Scaffold the Ralph pattern into a project
-#   add-cr     Scaffold a new change request
-#   start      Run the Ralph Loop (plan or build mode)
-#   critique   Council-of-experts plan review before build mode
-#   status     Show CR progress and what to do next
-#   help       Show this help
+#   init          Scaffold the Ralph pattern into a project
+#   add-cr        Scaffold a new change request
+#   start         Run the Ralph Loop (plan or build mode)
+#   critique      Council-of-experts plan review before build mode
+#   refine-plan   Bounded critique → apply-fixes loop on the plan
+#   status        Show CR progress and what to do next
+#   watch         Live structured tail of the running loop
+#   retro         Post-build retrospective + release-notes draft
+#   deploy        Deployment workflow (scaffold | critique | refine)
+#   help          Show this help
 
 RALPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -38,9 +42,28 @@ usage() {
   echo "                      --model opus|sonnet (default: opus for plan, sonnet for build)"
   echo ""
   echo "  critique   Council-of-experts plan review — run after plan, before build."
-  echo "             Spawns 4 parallel expert subagents (architect, tester, risk analyst,"
-  echo "             domain expert), synthesizes findings into one prioritized report."
+  echo "             Spawns 8 parallel expert subagents (architect, tester, risk analyst,"
+  echo "             domain expert, infra, security, performance, docs), synthesizes"
+  echo "             findings into one prioritized report saved under development/crN/critique/."
   echo "             Options: --cr N  (defaults to highest-numbered CR with a plan)"
+  echo ""
+  echo "  refine-plan   Bounded critique → apply-fixes loop on the plan."
+  echo "                Each iteration: re-critique, propose plan edits, ask human gate."
+  echo "                Options: --cr N, --max N (default 3), --gate human|auto,"
+  echo "                         --scope critical,important (which severities to apply)"
+  echo ""
+  echo "  watch      Live structured tail of the running loop."
+  echo "             Reads log/index.jsonl + the latest iteration log, formats events."
+  echo "             Options: --index-only, --log-only, --no-follow"
+  echo ""
+  echo "  retro      Post-build retrospective: plan-vs-reality, blocker patterns,"
+  echo "             test-coverage gaps, plus draft RELEASE_NOTES.md and PR description."
+  echo "             Options: --cr N, --no-files"
+  echo ""
+  echo "  deploy     Deployment workflow. Three subcommands:"
+  echo "             - ralph deploy scaffold --cr N    # derive deploy artifacts from plan"
+  echo "             - ralph deploy critique --cr N    # 6-expert council + peer-review"
+  echo "             - ralph deploy refine   --cr N    # bounded apply-fixes loop"
   echo ""
   echo "Typical workflow:"
   echo "  1. ralph init                           # bootstrap Ralph in this project"
@@ -59,11 +82,15 @@ COMMAND="${1:-}"
 shift 2>/dev/null || true
 
 case "$COMMAND" in
-  init)     bash "$RALPH_DIR/commands/init.sh"     "$@" ;;
-  add-cr)   bash "$RALPH_DIR/commands/add-cr.sh"   "$@" ;;
-  status)   bash "$RALPH_DIR/commands/status.sh"   "$@" ;;
-  start)    bash "$RALPH_DIR/commands/start.sh"    "$@" ;;
-  critique) bash "$RALPH_DIR/commands/critique.sh" "$@" ;;
+  init)        bash "$RALPH_DIR/commands/init.sh"        "$@" ;;
+  add-cr)      bash "$RALPH_DIR/commands/add-cr.sh"      "$@" ;;
+  status)      bash "$RALPH_DIR/commands/status.sh"      "$@" ;;
+  start)       bash "$RALPH_DIR/commands/start.sh"       "$@" ;;
+  critique)    bash "$RALPH_DIR/commands/critique.sh"    "$@" ;;
+  refine-plan) bash "$RALPH_DIR/commands/refine-plan.sh" "$@" ;;
+  watch)       bash "$RALPH_DIR/commands/watch.sh"       "$@" ;;
+  retro)       bash "$RALPH_DIR/commands/retro.sh"       "$@" ;;
+  deploy)      bash "$RALPH_DIR/commands/deploy.sh"      "$@" ;;
   help|--help|-h|"") usage ;;
   *)
     echo "Unknown command: $COMMAND"

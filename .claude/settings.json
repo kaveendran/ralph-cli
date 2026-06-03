@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"/mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test\")",
+      "Bash(New-Item -ItemType Directory -Force \"c:\\\\Users\\\\sabesonk\\\\Documents\\\\CGEN\\\\ralph-cli\\\\test\")",
+      "Bash(Out-Null)",
+      "Bash(Write-Output \"done\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\Users\\\\sabesonk\\\\Documents\\\\CGEN\\\\ralph-cli\\\\test\")",
+      "PowerShell(wsl bash /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/e2e.sh 2>&1)",
+      "Bash(wsl bash *)",
+      "PowerShell(wsl bash -c \"bash /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/e2e.sh\" 2>&1)",
+      "PowerShell(wsl bash -c \"cat /tmp/ralph-e2e-813148/development/initial/spec/spec.md | wc -w\" 2>&1)",
+      "Bash(wsl cat *)",
+      "PowerShell(wsl bash -c \"cat '/mnt/c/Users/sabesonk/Documents/CGEN/HNB/agent_registry/development/cr8/progress/implementation-progress.md'\" 2>&1)",
+      "PowerShell(wsl bash -c \"ls '/mnt/c/Users/sabesonk/Documents/CGEN/HNB/agent_registry/development/cr8/plan/'\" 2>&1)",
+      "PowerShell(wsl bash -c \"grep '^## Unit:' '/mnt/c/Users/sabesonk/Documents/CGEN/HNB/agent_registry/development/cr8/plan/cr8-implementation-plan.md'\" 2>&1)",
+      "PowerShell(wsl bash -c \"cat '/mnt/c/Users/sabesonk/Documents/CGEN/HNB/agent_registry/development/cr8/progress/implementation-progress.md'\")",
+      "PowerShell(wsl bash /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/debug-idem.sh 2>&1)",
+      "PowerShell(wsl bash /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/debug-idem2.sh 2>&1)",
+      "PowerShell(wsl bash -c \"rm /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/debug-idem.sh /mnt/c/Users/sabesonk/Documents/CGEN/ralph-cli/test/debug-idem2.sh\")",
+      "Bash(dir \"c:\\\\Users\\\\sabesonk\\\\Documents\\\\CGEN\\\\ralph-cli\")",
+      "Bash(bash ralph.sh help)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:alexlavaee.me)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:www.harness.io)",
+      "WebFetch(domain:paddo.dev)",
+      "Bash(wsl -e bash -c \"which ralph; type ralph; cat \\\\$\\(which ralph 2>/dev/null\\) 2>/dev/null | head -5; grep -n 'alias ralph' ~/.bashrc 2>/dev/null\")",
+      "Bash(bash -n commands/start.sh)",
+      "Bash(bash -n lib/context.sh)",
+      "Bash(bash -c 'set -euo pipefail; cd /tmp; printf \"# test\\\\n- [ ] U001 some unit\\\\n\" > /tmp/_ralph_test_progress.md; source \"/c/Users/sabesonk/Documents/CGEN/ralph-cli/lib/context.sh\"; generate_context /tmp/_ralph_test_progress.md > /dev/null && echo \"BEFORE-FIX would crash, AFTER-FIX succeeds: pass\" || echo \"still failing\"')"
+    ],
+    "additionalDirectories": [
+      "\\mnt\\c\\Users\\sabesonk\\Documents\\CGEN\\ralph-cli",
+      "\\tmp"
+    ]
+  }
+}

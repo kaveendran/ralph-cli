@@ -7,6 +7,8 @@ set -euo pipefail
 
 RALPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$RALPH_DIR/lib/template.sh"
+source "$RALPH_DIR/lib/tui.sh"
+source "$RALPH_DIR/lib/rules.sh"
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 PROJECT_DIR="."
@@ -24,35 +26,27 @@ done
 cd "$PROJECT_DIR"
 PROJECT_DIR="$(pwd)"
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ralph init — bootstrap Ralph Loop"
-echo "  Project: $PROJECT_DIR"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+tui_header "init — bootstrap Ralph Loop" "$PROJECT_DIR"
 
 # ── Core project info (both modes) ───────────────────────────────────────────
 DEFAULT_NAME="$(basename "$PROJECT_DIR")"
-read -rp "Project name [$DEFAULT_NAME]: " PROJECT_NAME
+PROJECT_NAME="$(tui_input "Project name" "$DEFAULT_NAME")"
 PROJECT_NAME="${PROJECT_NAME:-$DEFAULT_NAME}"
 
-read -rp "One-line description: " PROJECT_DESCRIPTION
+PROJECT_DESCRIPTION="$(tui_input "One-line description")"
 PROJECT_DESCRIPTION="${PROJECT_DESCRIPTION:-AI-powered project}"
 
 echo ""
 
 # ── Mode selection ────────────────────────────────────────────────────────────
 if [[ -z "$FORCE_MODE" ]]; then
-  echo "Setup mode:"
-  echo "  1) Auto   — Claude gathers your idea and generates the initial spec"
-  echo "  2) Manual — Create scaffold only; you write the spec yourself"
-  echo ""
-  read -rp "Choice [1]: " MODE_CHOICE
-  MODE_CHOICE="${MODE_CHOICE:-1}"
-  case "$MODE_CHOICE" in
-    1|auto)   FORCE_MODE="auto"   ;;
-    2|manual) FORCE_MODE="manual" ;;
-    *)        FORCE_MODE="auto"   ;;
+  _mode_choice="$(tui_choose "Setup mode" \
+    "Auto — Claude generates the initial spec from your brainstorm" \
+    "Manual — create scaffold only; you write the spec yourself")"
+  case "$_mode_choice" in
+    Auto*)   FORCE_MODE="auto"   ;;
+    Manual*) FORCE_MODE="manual" ;;
+    *)       FORCE_MODE="auto"   ;;
   esac
 fi
 
@@ -64,13 +58,13 @@ create_file() {
   local dst="$1" src="$2"
   shift 2
   if [[ -f "$dst" ]]; then
-    echo "  SKIP  $dst (already exists)"
+    tui_log_skip "$dst (already exists)"
     SKIPPED=$((SKIPPED + 1))
     return
   fi
   mkdir -p "$(dirname "$dst")"
   apply_template "$src" "$dst" "$@"
-  echo "  CREATE $dst"
+  tui_log_create "$dst"
   CREATED=$((CREATED + 1))
 }
 
@@ -83,21 +77,11 @@ create_dir() {
 
 # ── Implementation type selection (used in both modes) ────────────────────────
 pick_impl_type() {
-  # All display goes to stderr so command substitution captures only the type string.
-  echo "Implementation type:" >&2
-  echo "  1) backend+frontend  (full-stack)" >&2
-  echo "  2) backend only" >&2
-  echo "  3) frontend only" >&2
-  echo "  4) feature           (generic — fill in later)" >&2
-  echo "" >&2
-  read -rp "Choice [1]: " ITYPE_CHOICE
-  case "${ITYPE_CHOICE:-1}" in
-    1) echo "backend+frontend" ;;
-    2) echo "backend"          ;;
-    3) echo "frontend"         ;;
-    4) echo "feature"          ;;
-    *) echo "feature"          ;;
-  esac
+  tui_choose "Implementation type" \
+    "backend+frontend" \
+    "backend" \
+    "frontend" \
+    "feature"
 }
 
 # ── Build test/tech blocks from implementation type ───────────────────────────
@@ -156,28 +140,20 @@ build_tech_constraints() {
 
 # ── AUTO MODE ─────────────────────────────────────────────────────────────────
 bootstrap_auto() {
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  Auto mode — Claude will generate your initial spec"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
+  tui_header "Auto mode — Claude will generate your initial spec"
 
   IMPL_TYPE="$(pick_impl_type)"
   echo ""
 
-  echo "Tech stack (e.g. 'Python/FastAPI backend, React/TypeScript frontend, PostgreSQL'):"
-  read -rp "> " TECH_STACK
+  TECH_STACK="$(tui_input "Tech stack (e.g. Python/FastAPI, React/TypeScript, PostgreSQL)")"
   TECH_STACK="${TECH_STACK:-to be determined}"
   echo ""
 
-  echo "Core goals and features — describe your idea freely."
-  echo "(What problem does it solve? What are the key workflows? Any must-have features?)"
-  read -rp "> " BRAINSTORM
+  BRAINSTORM="$(tui_input "Core goals and features — describe your idea freely")"
   BRAINSTORM="${BRAINSTORM:-to be defined}"
   echo ""
 
-  echo "Constraints or non-negotiables (leave blank if none):"
-  echo "(e.g. 'must integrate with existing SSO', 'read-only mobile view', 'HIPAA compliant')"
-  read -rp "> " CONSTRAINTS
+  CONSTRAINTS="$(tui_input "Constraints or non-negotiables (leave blank if none)")"
   echo ""
 
   # ── Build the spec generation prompt ────────────────────────────────────────
@@ -239,24 +215,20 @@ Output only the specification document. No preamble, no explanation outside the 
     return 1
   fi
 
-  echo "Generating initial specification with Claude (this takes ~30 seconds)..."
-  echo ""
-
-  # Create the spec file directory before writing
   mkdir -p development/initial/spec
-
   local spec_file="development/initial/spec/spec.md"
-  local exit_code=0
+  local tmp_prompt exit_code=0
+  tmp_prompt="$(mktemp)"
+  printf '%s' "$SPEC_PROMPT" > "$tmp_prompt"
 
-  printf '%s' "$SPEC_PROMPT" | claude -p \
-    --dangerously-skip-permissions \
-    --output-format text \
-    --model sonnet \
-    > "$spec_file" || exit_code=$?
+  tui_spin "Generating initial specification with Claude (~30s)" \
+    bash -c "claude -p --dangerously-skip-permissions --output-format text --model sonnet \
+      < \"$tmp_prompt\" > \"$spec_file\"" \
+    || exit_code=$?
+  rm -f "$tmp_prompt"
 
   if [[ $exit_code -ne 0 ]] || [[ ! -s "$spec_file" ]]; then
-    echo "  WARNING: Claude spec generation failed (exit $exit_code)."
-    echo "  A stub spec has been created — fill it in manually."
+    tui_log_warn "Claude spec generation failed (exit $exit_code) — stub spec created instead."
     # Write fallback stub so the file exists
     apply_template "$RALPH_DIR/templates/spec.md" "$spec_file" \
       "CR_NAME" "Initial" \
@@ -264,13 +236,86 @@ Output only the specification document. No preamble, no explanation outside the 
       "IMPLEMENTATION_TYPE" "$IMPL_TYPE" \
       "CREATED_DATE" "$(date +%Y-%m-%d)"
   else
-    echo "  CREATE $spec_file (AI-generated)"
+    tui_log_create "$spec_file (AI-generated)"
     CREATED=$((CREATED + 1))
   fi
 
   echo ""
-  echo "Review your spec: $spec_file"
+  tui_log_ok "Review your spec: $spec_file"
   echo ""
+
+  # ── Second Claude pass — derive a real CLAUDE.md from the just-generated spec ──
+  if [[ -s "$spec_file" ]]; then
+    local claude_md_prompt
+    claude_md_prompt="You are writing CLAUDE.md for an AI coding agent working on a new project.
+
+CLAUDE.md is loaded into the agent's context on every invocation. It must capture project standards, conventions, and non-obvious decisions — NOT operational commands (those go in AGENTS.md) and NOT product description (that's in spec.md).
+
+Read the project spec, tech stack, and brainstorm below, then write a CLAUDE.md with these sections:
+
+# Project: ${PROJECT_NAME}
+
+${PROJECT_DESCRIPTION}
+
+## Tech Stack
+(One line per technology — name, version constraint, why chosen. Pull from the spec where possible.)
+
+## Architecture Principles
+(3–6 bullet points capturing the load-bearing decisions: layering, async vs sync, state management approach, data access pattern. Extract from spec §2 System Architecture.)
+
+## Code Standards
+(Concrete, enforceable rules: naming, file layout, type usage, error handling, logging. If frontend: color/CSS rules, component patterns. If backend: schema/migration rules, async rules.)
+
+## Testing Standards
+(Required test types per change, fixture conventions, what 'green' means.)
+
+## Out-of-bounds
+(Things this project deliberately does NOT do — anti-patterns, rejected approaches. Pull from spec §10 Open Questions / Assumptions if present.)
+
+Rules:
+- Be opinionated and specific. Avoid 'follow best practices'.
+- No placeholder text. If you don't know something, omit the bullet rather than write '(TBD)'.
+- Total length ~50–120 lines. This file is read every iteration; brevity matters.
+
+---
+SPEC:
+$(cat "$spec_file")
+---
+TECH STACK: ${TECH_STACK}
+BRAINSTORM: ${BRAINSTORM}
+CONSTRAINTS: ${CONSTRAINTS:-none}
+
+Output only the CLAUDE.md document. No preamble."
+
+    local tmp_claude_prompt
+    tmp_claude_prompt="$(mktemp)"
+    printf '%s' "$claude_md_prompt" > "$tmp_claude_prompt"
+
+    local claude_md_exit=0
+    tui_spin "Generating CLAUDE.md from spec (~20s)" \
+      bash -c "claude -p --dangerously-skip-permissions --output-format text --model sonnet \
+        < \"$tmp_claude_prompt\" > CLAUDE.md.generated" \
+      || claude_md_exit=$?
+    rm -f "$tmp_claude_prompt"
+
+    if [[ $claude_md_exit -eq 0 ]] && [[ -s CLAUDE.md.generated ]]; then
+      if [[ -f CLAUDE.md ]] && grep -q '(list your tech stack here)' CLAUDE.md 2>/dev/null; then
+        # Existing CLAUDE.md is the stub — replace it
+        mv CLAUDE.md.generated CLAUDE.md
+        tui_log_create "CLAUDE.md (AI-generated from spec)"
+      elif [[ ! -f CLAUDE.md ]]; then
+        mv CLAUDE.md.generated CLAUDE.md
+        tui_log_create "CLAUDE.md (AI-generated from spec)"
+      else
+        # User has a custom CLAUDE.md — keep theirs, leave generated as .suggested
+        mv CLAUDE.md.generated CLAUDE.md.suggested
+        tui_log_warn "CLAUDE.md exists with custom content — generated version saved as CLAUDE.md.suggested"
+      fi
+    else
+      rm -f CLAUDE.md.generated
+      tui_log_warn "CLAUDE.md generation skipped (claude returned non-zero or empty output)"
+    fi
+  fi
 }
 
 # ── MANUAL MODE ───────────────────────────────────────────────────────────────
@@ -303,22 +348,16 @@ if [[ "$IMPL_TYPE" == "backend" || "$IMPL_TYPE" == "backend+frontend" ]]; then
   echo ""
   echo "Docker test infrastructure generates docker-compose.test.yml + scripts/"
   echo "for isolated Layer 1 (unit), Layer 2 (API), and Layer 3 (E2E) testing."
-  read -rp "Generate Docker test infrastructure? [Y/n]: " INFRA_CHOICE
-  [[ "${INFRA_CHOICE:-Y}" =~ ^[Yy]$ ]] && GENERATE_TEST_INFRA=true
+  tui_confirm "Generate Docker test infrastructure?" && GENERATE_TEST_INFRA=true || true
 fi
 
 TEST_CMDS="$(build_test_cmds "$IMPL_TYPE" "$GENERATE_TEST_INFRA")"
 TECH_CONSTRAINTS="$(build_tech_constraints "$IMPL_TYPE" "$TECH_STACK")"
 
-CRITICAL_RULES="- After completing each unit, re-read the spec and plan before picking the next one.
-- Do not mark a unit [x] until every test in its Test Plan section passes unmodified.
-- If stuck on a single blocker for more than 3 tool-call rounds, mark the unit [!] Blocked with a clear reason and move on.
-- Never skip, xfail, or comment out failing tests — fix the root cause or mark the unit blocked.
-- Schema changes must be strictly additive unless the spec explicitly requires otherwise."
+CRITICAL_RULES="$(build_layered_rules "$IMPL_TYPE")"
 
 # ── Create scaffold files ─────────────────────────────────────────────────────
-echo "Creating scaffold..."
-echo ""
+tui_section "Creating scaffold"
 
 create_file "AGENTS.md" "$RALPH_DIR/templates/agents.md" \
   "PROJECT_NAME" "$PROJECT_NAME"
@@ -356,6 +395,10 @@ if [[ "$GENERATE_TEST_INFRA" == "true" ]]; then
   fi
 fi
 create_dir "development/initial/prompts"
+
+create_file "development/initial/progress/implementation-progress.md" "$RALPH_DIR/templates/progress.md" \
+  "CR_NAME" "Initial" \
+  "CR_TITLE" "$PROJECT_NAME"
 
 create_file "development/templates/implementation-planning.md" "$RALPH_DIR/templates/spec-planning.md" \
   "SPEC_PATH" "development/initial/spec/spec.md" \
@@ -396,11 +439,7 @@ if [[ "$FORCE_MODE" == "manual" ]]; then
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Done: $CREATED created, $SKIPPED skipped"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+tui_header "Done" "$CREATED created, $SKIPPED skipped"
 
 if [[ "$FORCE_MODE" == "auto" ]]; then
   echo "Generated spec: development/initial/spec/spec.md"
@@ -417,9 +456,9 @@ echo ""
 
 # ── Offer to kick off planning loop immediately (auto mode only) ──────────────
 if [[ "$FORCE_MODE" == "auto" ]]; then
-  read -rp "Run the planning loop now to generate the implementation plan? [y/N]: " RUN_PLAN
-  if [[ "${RUN_PLAN:-N}" =~ ^[Yy]$ ]]; then
+  if tui_confirm "Run the planning loop now to generate the implementation plan?" no; then
     echo ""
-    bash "$RALPH_DIR/commands/start.sh" --mode plan
+    bash "$RALPH_DIR/commands/start.sh" --mode plan \
+      --prompt "development/initial/prompts/spec-planning.md"
   fi
 fi

@@ -1,26 +1,22 @@
 # {{CR_NAME}} Implementation Progress
 
-| PR | Title | Status |
-|----|-------|--------|
-| PR1 | (title) | [ ] Not Started |
-
-**Release tag:** (pending)
+**Release tag:** (pending — set when all units are [x])
 
 ---
 
-## Resolutions
+## Units
 
-- **Gaps, ambiguities, and assumptions** — record here as they are discovered and resolved.
+<!-- Claude updates this file after each unit. Format:
+  - [ ] U001 Not started
+  - [~] U002 In progress
+  - [x] U003 Complete
+  - [!] U004 Blocked — reason
+-->
+
+- [ ] U001 (fill in after running plan mode)
 
 ---
 
-## PR1 — (title)
+## Notes
 
-**Completion date:** (pending)
-
-### Units
-
-#### U001 — (name)
-- **Status:** [ ] Not Started
-- **Date completed:** —
-- **Notes:** —
+- Record gaps, ambiguities, and assumptions here as they are resolved.

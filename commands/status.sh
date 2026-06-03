@@ -2,6 +2,9 @@
 # ralph status — show CR progress and what to do next.
 set -euo pipefail
 
+RALPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$RALPH_DIR/lib/tui.sh"
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 CR_NUMBER=""
 while [[ $# -gt 0 ]]; do
@@ -49,11 +52,7 @@ PROGRESS_FILE="${CR_DIR}/progress/implementation-progress.md"
 BUILD_PROMPT="${CR_DIR}/prompts/build.md"
 PLAN_PROMPT="${CR_DIR}/prompts/spec-planning.md"
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-printf "  ralph status — %s\n" "$CR_LABEL"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+tui_header "status — $CR_LABEL"
 
 # ── Stage detection ───────────────────────────────────────────────────────────
 
@@ -127,13 +126,13 @@ print_file_status() {
   if [[ -f "$path" ]]; then
     local lines
     lines=$(wc -l < "$path" 2>/dev/null || echo "?")
-    printf "  ✓ %-40s (%s lines)\n" "$label" "$lines"
+    tui_log_ok "$(printf '%-42s' "$label") ($lines lines)"
   else
-    printf "  ✗ %-40s (missing)\n" "$label"
+    tui_log_err "$(printf '%-42s' "$label") (missing)"
   fi
 }
 
-echo "Stage: $STAGE"
+printf 'Stage: '; tui_stage_badge "$STAGE"
 echo ""
 echo "Files:"
 print_file_status "spec/spec.md" "$SPEC_FILE"
@@ -209,9 +208,8 @@ case "$STAGE" in
       printf "    %-12s %d\n" "Not started:" "${notstarted_count:-0}"
       printf "    %-12s %d\n" "Blocked:"     "${blocked_count:-0}"
       if [[ "${total_units:-0}" -gt 0 ]]; then
-        pct=$(( complete_count * 100 / total_units ))
         echo ""
-        printf "    Progress: %d/%d units (%d%%)\n" "$complete_count" "$total_units" "$pct"
+        tui_progress "$complete_count" "$total_units"
       fi
     fi
     echo ""
@@ -268,7 +266,11 @@ case "$STAGE" in
 esac
 
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if tui_available; then
+  gum style --foreground 240 "─────────────────────────────────────────"
+else
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+fi
 
 # ── Recent commits ────────────────────────────────────────────────────────────
 if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
