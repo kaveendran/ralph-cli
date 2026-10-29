@@ -353,13 +353,13 @@ Target: **start an iteration at ≤ 35k tokens and stay under 200k**. In our mea
 | Personal MCP servers and connectors | `--strict-mcp-config --mcp-config .ralph/mcp.json` | Only the project's servers (e.g. Playwright) load. |
 | Personal plugins, hooks and skills | `--setting-sources project,local` (configurable) | Keeps the project's skills, agents, rules and hooks; drops user-level ones ([SDK features](https://code.claude.com/docs/en/agent-sdk/claude-code-features)). |
 | Auto memory | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | It is machine-local, unversioned and loads every session ([memory](https://code.claude.com/docs/en/memory)). Team memory lives in git ([§8](#8-memory-management)). |
-| Skills | Don't pass `--disable-slash-commands` (it disables all skills). Use `skillOverrides` / `disableBundledSkills` instead. | Keeps the curated project skills ([skills](https://code.claude.com/docs/en/skills)). |
+| Skills | Don't pass `--disable-slash-commands` (it disables all skills). Use `skillOverrides` to hide specific skills. `disableBundledSkills` was tested and increased first-turn context, so it stays off ([§20](#20-spike-results-p0)). | Keeps the curated project skills ([skills](https://code.claude.com/docs/en/skills)). |
 | `--bare` | Not the default | It skips CLAUDE.md, skills and hooks and requires `ANTHROPIC_API_KEY` (no OAuth). Offered as `runner.bare = true` for API-key/CI users. Note that `--bare` "will become the default for `-p`" ([headless](https://code.claude.com/docs/en/headless)), so ralph always passes explicit flags. |
 
 ### 7.5 Prompt-cache friendliness
 - Claude Code caches in the order system prompt → project context → conversation, with a 1-hour TTL on subscriptions and 5 minutes with API keys ([prompt-caching](https://code.claude.com/docs/en/prompt-caching)).
 - **Keep these identical across iterations:** model, effort, tools, MCP set and flags. Edit CLAUDE.md only in dedicated "promotion" commits.
-- Sequential sessions only share a cached prefix when the git status snapshot matches. So set `includeGitInstructions: false` in the run settings and inject git state in L3. Also pass `--exclude-dynamic-system-prompt-sections` ([cli-reference](https://code.claude.com/docs/en/cli-reference)).
+- **Measured in P0:** the prompt cache is already reused across sequential iterations (about 26k tokens read from cache on the second run) even when the git state changes. `includeGitInstructions: false` and `--exclude-dynamic-system-prompt-sections` saved only ~560 tokens, so they aren't used by default ([§20](#20-spike-results-p0)).
 
 ---
 
@@ -540,7 +540,7 @@ Every command that pushes prints a summary and asks for confirmation; `--yes` sk
   - Taking one over needs `--take-over`, done as a compare-and-swap.
 - **Hard locks:** `refs/ralph/locks/<path-hash>`, created with `ralph lock`. The loop enforces the locks it knows about (as of your last sync) through a `PreToolUse` deny hook, which "applies even in bypassPermissions mode" ([permissions](https://code.claude.com/docs/en/agent-sdk/permissions)).
 - **How the loop uses claims:** in team mode, `ralph start` builds only units you've claimed (`--mine` is the default), or the units you name with `--unit`. It never selects a unit someone else has claimed, as of your last sync.
-- **Setup:** `ralph init --team` adds the fetch refspec `+refs/ralph/*:refs/ralph/*`. If the host rejects custom refs, the fallback is `refs/heads/ralph-claims/*` (to be verified in a spike, [§20](#20-unverified-items-to-spike-first)).
+- **Setup:** `ralph init --team` adds the fetch refspec `+refs/ralph/*:refs/ralph/*`. If the host rejects custom refs, the fallback is `refs/heads/ralph-claims/*` (to be verified in a spike, [§20](#20-spike-results-p0)).
 
 ### 11.4 Change ledger: what changed, by whom
 - One file per completed unit, `.ralph/ledger/<timestamp>-<cr>-<unit>.json`.
@@ -624,9 +624,8 @@ claude -p
   --max-turns <N> --max-budget-usd <X>
   --setting-sources project,local
   --strict-mcp-config --mcp-config .ralph/mcp.json
-  --settings log/<run>/<iter>/settings.json            # hooks, includeGitInstructions:false, permissions
+  --settings log/<run>/<iter>/settings.json            # guardrail hooks, permissions
   --permission-mode <configured>
-  --exclude-dynamic-system-prompt-sections
 env: CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000  CLAUDE_CODE_DISABLE_AUTO_MEMORY=1  [OTEL_* when enabled]
 stdin: the unit pack (L3)
 ```
@@ -660,7 +659,7 @@ This replaces the `result.json` file. Output is schema-validated through `--json
 | `container` | `bypass` inside a hardened container | **Recommended for unattended or overnight runs** ([secure deployment](https://code.claude.com/docs/en/agent-sdk/secure-deployment)). |
 
 ### 12.6 Keeping up with Claude Code updates
-Claude Code ships often: the version installed here is 2.1.306, and the Agent SDK released on 2026-10-24 already bundles 2.1.310. `--bare` "will become the default for `-p`" ([headless](https://code.claude.com/docs/en/headless)). A harness that parses the CLI's output must not break silently on an update:
+Claude Code ships often. It **updated itself from 2.1.306 to 2.1.311 during the P0 spikes**, and the Agent SDK released on 2026-10-24 already bundles 2.1.310. `--bare` "will become the default for `-p`" ([headless](https://code.claude.com/docs/en/headless)). A harness that parses the CLI's output must not break silently on an update:
 - **Pin the version.** Set `runner.claude_version` in `.ralph/config.toml`. Preflight compares it with `claude --version` and stops on a mismatch (override with `--allow-version-drift`). On machines that run the loop, turn off auto-update (to be confirmed in P0).
 - **Pass every flag explicitly.** Never rely on a default, because defaults change.
 - **Contract tests.** Real stream-json recorded during the P0 spikes is stored under `tests/fixtures/streams/<version>/` and replayed through the parser in CI. Before moving to a new version, `ralph doctor --record` captures fresh streams, and the tests show what changed.
@@ -795,7 +794,7 @@ log/                     # ignored: iterations.jsonl + per-iteration run directo
 | Phase | Delivers | Exit check |
 |---|---|---|
 | **P-1 Quick-win experiment** (1–2 days, on today's bash loop) | The cheapest fixes from this plan, applied to the current loop (details below) | 1–3 real units measured against the [success targets](#success-targets); continue only if the diagnosis holds |
-| **P0 Spikes** | Answers to the items in §20, plus recorded real streams for the contract tests | Each item verified or given a fallback |
+| **P0 Spikes** | Answers to the questions in §20, plus recorded real streams for the contract tests | Each item verified or given a fallback |
 | **P1 Solo kernel** (fixes the slowdown) | kernel, graph with the unit size check, context, runner (CLI) with version pinning and `ralph doctor`, verify with the test-integrity check and per-unit review, monitor (local), migrate, `start/status/watch/graph/unblock` | Unit, fake-claude integration and contract tests pass; a **dry-run** on a real project prints the pack size vs today's; a toy-repo smoke run costs cents; then, with your go-ahead, at least 5 real units checked against the success targets |
 | **P2 Memory and skills** | learnings lifecycle, curated skills and subagents, starter stack skills, pinned docs and `skills refresh`, lint and evals | Promotion flow works; skills load under the hermetic flags; a stale skill is flagged after a dependency upgrade |
 | **P3a Manual team sync** | `sync`, `sync push`, ledger, local impact check, `team/changes/impact`, optional `ralph pr` | Two clones on a test remote: `ralph sync` shows BREAKING and OVERLAP, nothing is pushed without confirmation, and a test proves the loop makes **zero network calls** |
@@ -843,16 +842,24 @@ These changes stay useful until the new harness replaces the bash loop.
 
 ---
 
-## 20. Unverified items to spike first
-1. Whether `--json-schema` works together with `--output-format stream-json`, putting `structured_output` on the result event. Strongly implied, since the SDK drives the CLI over stream-json.
-2. Whether `--max-turns` is honoured in 2.1.306. It is hidden from `--help` but present in the binary.
-3. Whether `--setting-sources project,local` drops user plugins and hooks, and whether `--strict-mcp-config` removes the claude.ai account connectors. Check the `init` event.
-4. Whether GitHub accepts pushes to `refs/ralph/*` and fetches them with a custom refspec.
-5. The effect of `includeGitInstructions:false` and `--exclude-dynamic-system-prompt-sections` on cache reads across sequential iterations.
-6. Whether hook denies hold under `bypassPermissions` for the CLI as well as the SDK.
-7. Whether the CLI `--setting-sources` maps exactly to the SDK table (project skills, agents and rules load; user ones don't).
-8. Whether turning off auto-update (e.g. `DISABLE_AUTOUPDATER=1`) keeps the CLI at the pinned version.
-9. Whether git's environment configuration (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`) can disable push URLs for the agent's process only.
+## 20. Spike results (P0)
+These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session.
+
+| # | Question | Result | What it changes |
+|---|---|---|---|
+| 1 | Does `--json-schema` work with `--output-format stream-json`? | **Yes.** The result event carries `structured_output`, e.g. `{"unit":"U001","status":"done"}`. | Use it for the result contract ([§12.3](#123-result-contract)). |
+| 2 | Is `--max-turns` honoured? (It's hidden from `--help`.) | **Yes.** The run ends with subtype `error_max_turns`, `terminal_reason: max_turns`, exit code 1. | Safe to rely on. P-1 treats it as a cap, not a failure. |
+| 3 | Do the hermetic flags drop personal MCP servers, plugins and hooks? | **Yes.** No MCP servers (the claude.ai connectors are gone), and no personal plugin or hooks. Tools drop from 104 to 30. Four `@builtin` plugins that ship with Claude Code still load. | Works as planned. |
+| 4 | Does GitHub accept pushes to `refs/ralph/*`? | **Not tested.** It needs a push to GitHub. | Test on a throwaway repo before P3b. |
+| 5 | Do `includeGitInstructions:false` and `--exclude-dynamic-system-prompt-sections` improve cache reuse? | **Barely.** The second iteration read ~26k tokens from cache either way; the difference was ~560 tokens. | Not worth it; dropped from the default flags ([§7.5](#75-prompt-cache-friendliness)). |
+| 6 | Does a deny hook hold under `--dangerously-skip-permissions` in the CLI? | **Yes.** The command didn't run, and `permission_denials` = 1. | The guardrail hooks work, for preventing accidents. |
+| 7 | Does the CLI's `--setting-sources` match the SDK table? | **Yes.** Project skills and agents load; the user-level plugin and hooks don't. | Matches [§7.4](#74-hermetic-runs). |
+| 8 | How do we pin the Claude Code version? | **Per the [setup docs](https://code.claude.com/docs/en/setup):** `DISABLE_AUTOUPDATER=1` stops background updates, `DISABLE_UPDATES` blocks every update path, `autoUpdatesChannel: "stable"` lags about a week, and `claude install <version>` pins an exact version. | Set it on machines that run the loop. The preflight version check stays in P1 ([§12.6](#126-keeping-up-with-claude-code-updates)). |
+| 9 | Can git's environment configuration disable pushes for one process? | **Yes.** The push fails (exit 128), fetch still works, and a normal push is unaffected. | Add it in P1 as the second push guard ([§12.4](#124-guardrails-hooks-in-the-per-run---settings)). |
+| 10 | Does `disableBundledSkills` shrink context? (extra) | **No.** It hides 19 bundled skills and keeps project skills, but first-turn context went *up* by ~3.7k tokens. | Leave it off. |
+| 11 | Does the P-1 loop work end to end? (extra) | **Yes.** On a toy project with 2 units, the real CLI accepted every flag. Claude did exactly one unit, committed it, and left the second unit alone. Peak context was 34k tokens, cost $0.004. | P-1 is ready for a real unit. |
+
+The raw event streams from these runs become the contract-test fixtures in P1, with paths and session IDs removed.
 
 ---
 

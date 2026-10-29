@@ -314,7 +314,9 @@ while true; do
     _peak=$(agent_stats "$LOG_FILE" peak_context)
     _compactions=$(agent_stats "$LOG_FILE" compactions)
     if [[ -n "$_turns" ]]; then
-      tui_log_ok "Iteration $ITERATION: unit ${UNIT_ID:-n/a} · ${_turns} turns · $(( ${_ms:-0} / 60000 )) min · \$${_cost:-?} · peak context ${_peak:-?} tokens · ${_compactions:-0} compactions"
+      if [[ ${_ms:-0} -lt 60000 ]]; then _took="$(( ${_ms:-0} / 1000 ))s"; else _took="$(( ${_ms:-0} / 60000 )) min"; fi
+      _cost_str=$(printf '%.2f' "${_cost:-0}" 2>/dev/null || echo "?")
+      tui_log_ok "Iteration $ITERATION: unit ${UNIT_ID:-n/a} · ${_turns} turns · ${_took} · \$${_cost_str} · peak context ${_peak:-?} tokens · ${_compactions:-0} compactions"
     fi
   fi
 
