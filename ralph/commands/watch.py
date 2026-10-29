@@ -37,7 +37,8 @@ def _record_line(record: dict) -> str:
     return (f"  {record.get('run_id', '')} #{record.get('iteration', 0):<2} {record.get('unit', '?'):<10} "
             f"{record.get('outcome', '?'):<11} {agent.get('num_turns') or 0:>4} turns "
             f"{(agent.get('duration_ms') or 0) / 60000:>5.1f} min ${cost:>6.2f} "
-            f"peak {agent.get('peak_context') or 0:>9,}")
+            f"peak {agent.get('peak_context') or 0:>9,}"
+            + (f" · {agent['permission_denials']} denied" if agent.get("permission_denials") else ""))
 
 
 def _latest_stream(log_dir: Path) -> Path | None:

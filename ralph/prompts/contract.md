@@ -9,6 +9,7 @@ You are one iteration of an automated build loop run by a harness. Each iteratio
 
 ## Keep your context small
 - Delegate codebase exploration (finding files, reading code to answer a question, tracing how something works, searching for usages) to the `explorer` subagent, and work from its summary.
+- Hand long test runs (a whole suite, anything with lots of output) to the `test-runner` subagent with the exact command; it reports only the failures. Quick targeted runs you can do yourself.
 - Read a file yourself only when you are about to edit it, and only the part you need.
 
 ## Leave these to the harness

@@ -10,6 +10,7 @@ import io
 import json
 import os
 import unittest
+from unittest import mock
 
 from ralph.config import Config
 from ralph.errors import RalphError
@@ -353,6 +354,56 @@ class Safeguards(LoopTestCase):
             kernel.run()
         self.assertEqual(self.units()["U001"].size_warning, "compacted 2 times")
         self.assertIn("Too big for one session?", self.store.notes_path("U001").read_text())
+
+
+
+class UsageLimitAndSubagents(LoopTestCase):
+    def test_waiting_through_a_usage_limit_doesnt_count_toward_max(self):
+        self.config.loop.on_usage_limit = "wait"
+        clock = [1_000_000.0]
+        def limited(call):
+            return helpers.agent_result(call, [{"type": "rate_limit_event", "rate_limit_info":
+                                                {"status": "rejected", "resetsAt": int(clock[0]) + 600}},
+                                               *helpers.result_events(None)], exit_code=1)
+        kernel, runner = self.kernel(limited, done_step("U001", {"a.py": "a\n"}), max_iterations=1)
+        out = io.StringIO()
+        with mock.patch("ralph.kernel.loop.time.time", side_effect=lambda: clock[0]), \
+                mock.patch("ralph.kernel.loop.time.sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertIn("waiting until", out.getvalue())
+        self.assertEqual(len(runner.calls), 2)                     # the wait didn't use up --max 1
+        self.assertIs(self.units()["U001"].status, Status.DONE)
+
+    def test_a_far_off_reset_still_stops_the_loop(self):
+        self.config.loop.on_usage_limit = "wait"
+        self.config.loop.max_wait_hours = 1
+        far = lambda call: helpers.agent_result(call, [{"type": "rate_limit_event", "rate_limit_info":
+                                                        {"status": "rejected", "resetsAt": 9_999_999_999}},
+                                                       *helpers.result_events(None)], exit_code=1)
+        kernel, runner = self.kernel(far)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertIn("the reset is too far off", out.getvalue())
+
+    def test_preflight_makes_the_lessons_inbox_merge_line_by_line(self):
+        kernel, _ = self.kernel()
+        with contextlib.redirect_stdout(io.StringIO()):
+            kernel.preflight(need_units=True)
+        path = self.root / ".git" / "info" / "attributes"
+        self.assertIn(".ralph/learnings/*.jsonl merge=union", path.read_text())
+        with contextlib.redirect_stdout(io.StringIO()):
+            kernel.preflight(need_units=True)                       # again: nothing is added twice
+        self.assertEqual(path.read_text().count("merge=union"), 1)
+
+    def test_runs_get_the_explorer_and_the_test_runner(self):
+        kernel, runner = self.kernel(done_step("U001", {"a.py": "a\n"}), max_iterations=1)
+        kernel.run()
+        agents = json.loads(runner.calls[0].agents_file.read_text())
+        self.assertEqual(sorted(agents), ["explorer", "test-runner"])
+        self.assertIn("Bash", agents["test-runner"]["tools"])
+        self.assertIn("test-runner", runner.calls[0].system_append)
 
 
 if __name__ == "__main__":

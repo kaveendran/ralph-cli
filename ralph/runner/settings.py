@@ -17,7 +17,9 @@ from pathlib import Path
 from ralph.fsutil import write_text_atomic
 from ralph.prompts import PACKAGE_DIR
 
-EXPLORER_AGENT = {
+# The subagents a build run can delegate to (Claude Code's --agents). Each works in
+# its own context and returns a short summary, so the main context stays small.
+AGENTS = {
     "explorer": {
         "description": ("Read-only codebase explorer. Use it to find files, read code to answer a question, "
                         "trace how something works, or search for usages, instead of reading many files "
@@ -30,7 +32,21 @@ EXPLORER_AGENT = {
                    "- Don't propose or make changes."),
         "tools": ["Read", "Grep", "Glob"],
         "model": "sonnet",
-    }
+    },
+    "test-runner": {
+        "description": ("Runs a test command and reports only what failed. Use it for a whole suite or any run "
+                        "with long output, instead of running it yourself, so the output doesn't fill your "
+                        "context. Give it the exact command."),
+        "prompt": ("You run tests on behalf of another agent and report back briefly.\n\n"
+                   "- Run exactly the command you were given, once. Don't change files or install anything.\n"
+                   "- If everything passes, reply with one line: the command, PASSED, and the test count.\n"
+                   "- If anything fails, reply with at most about 40 lines: for each failing test, its name, "
+                   "the assertion or error message, and the file and line it points to. Leave out passing "
+                   "tests, warnings and progress output.\n"
+                   "- Don't try to fix anything."),
+        "tools": ["Bash", "Read"],
+        "model": "haiku",
+    },
 }
 
 
@@ -72,7 +88,7 @@ def write_run_settings(root: Path, run_dir: Path, frozen: list[str], sandbox: di
 
 def write_agents_file(run_dir: Path) -> Path:
     path = run_dir / "agents.json"
-    write_text_atomic(path, json.dumps(EXPLORER_AGENT, indent=2) + "\n")
+    write_text_atomic(path, json.dumps(AGENTS, indent=2) + "\n")
     return path
 
 

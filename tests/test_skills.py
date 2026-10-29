@@ -15,6 +15,7 @@ from ralph.skills.lint import lint_skill, lint_skills
 from ralph.skills.refresh import stale_docs, stale_skills, version_matches
 from ralph.skills.registry import discover
 from ralph.skills.select import suggest
+from ralph.skills.stats import compare
 from tests.helpers import ScriptedRunner, TempDirTestCase, agent_result, result_events
 
 
@@ -172,6 +173,20 @@ class Complexity(TempDirTestCase):
                          [("U001", True, ["schema", "endpoint"]), ("U002", False, [])])
         self.assertIn("### U001 — Big", runner.calls[0].prompt)
         self.assertEqual(runner.calls[0].tools, [])
+
+
+
+class Effect(unittest.TestCase):
+    def test_iterations_with_a_skill_are_compared_with_the_rest(self):
+        def record(unit, outcome, turns, cost, skills=()):
+            return {"unit": unit, "outcome": outcome,
+                    "agent": {"num_turns": turns, "total_cost_usd": cost, "skills_invoked": list(skills)}}
+        records = [record("U1", "done", 10, 1.0, ["api"]), record("U2", "done", 20, 2.0, ["api"]),
+                   record("U3", "retry", 40, 4.0), record("U3", "done", 30, 3.0), record("task", "done", 5, 0.5)]
+        (effect,) = compare(records)
+        self.assertEqual((effect.skill, effect.used.iterations, effect.used.turns, effect.used.done), ("api", 2, 15, 1.0))
+        self.assertEqual((effect.unused.iterations, effect.unused.cost_usd, effect.unused.done), (2, 3.5, 0.5))
+        self.assertEqual(compare([record("U1", "done", 1, 0)]), [])
 
 
 if __name__ == "__main__":

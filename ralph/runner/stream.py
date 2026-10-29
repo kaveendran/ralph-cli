@@ -31,6 +31,7 @@ class StreamStats:
     last_text: str = ""                  # the main agent's latest text
     skills_invoked: list = field(default_factory=list)   # names passed to the Skill tool
     usage_limited: bool = False
+    usage_resets_at: int | None = None   # epoch seconds, from the rejected rate_limit_event
     init: dict | None = None
     result: dict | None = None
     events: int = 0
@@ -65,6 +66,7 @@ class StreamStats:
             info = event.get("rate_limit_info") or event
             if str(info.get("status", "")).lower() == "rejected":
                 self.usage_limited = True
+                self.usage_resets_at = info.get("resetsAt") if isinstance(info.get("resetsAt"), int) else None
         elif kind == "assistant" and not event.get("parent_tool_use_id"):
             self._assistant(event.get("message") or {})
 

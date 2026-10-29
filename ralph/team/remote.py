@@ -39,3 +39,9 @@ def swap_ref(git: Git, remote: str, ref: str, new: str, expected: str) -> bool:
     source = f"{new}:{ref}" if new else f":{ref}"
     result = git.run("push", "--porcelain", f"--force-with-lease={ref}:{expected}", remote, source, check=False)
     return result.returncode == 0
+
+
+def open_draft_pr(root, base: str, head: str, title: str, body: str) -> subprocess.CompletedProcess:
+    """`gh pr create --draft`. Raises FileNotFoundError when gh isn't installed."""
+    return subprocess.run(["gh", "pr", "create", "--draft", "--base", base, "--head", head, "--title", title,
+                           "--body", body], cwd=root, capture_output=True, text=True)

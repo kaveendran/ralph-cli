@@ -39,6 +39,8 @@ paid_gates = {{PAID_GATES}}
 max_stalls = 3             # iterations in a row that change nothing
 tag_format = "{cr}-done"   # local tag when a CR converges; "" turns it off
 max_cost_usd = 0           # stop a run once it has spent this much in total (0: no limit; --run-budget)
+on_usage_limit = "stop"    # or "wait": sleep until the usage limit resets, then go on (waits don't count toward --max)
+max_wait_hours = 6         # wait: stop instead when the reset is further off
 
 # Size budgets in lines, checked at start and by `ralph memory lint`.
 [memory]
@@ -54,6 +56,9 @@ remote = "origin"
 ledger = true              # record what each unit changed in .ralph/ledger/, committed with it
 impact_days = 7            # teammates' changes this recent are checked against each unit
 stale_sync_hours = 12      # remind you to `ralph sync` when your last fetch is older
+claims = false             # true: only build units you've claimed (`ralph claim`); --mine does it per run
+lease_hours = 48           # a claim expires after this long unless renewed
+# refs = "refs/heads/ralph-claims"   # if your git host rejects custom refs (default "refs/ralph")
 
 # Tell you when the loop needs you. Best-effort: a failure never changes what the loop does.
 [notify]

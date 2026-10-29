@@ -76,8 +76,7 @@ class LaneRunner:
     def __init__(self, kernel: Kernel, lanes: int, child_args: list[str]):
         self.kernel, self.lanes, self.child_args = kernel, min(max(lanes, 1), MAX_LANES), child_args
         self.git = kernel.git
-        common = Path(self.git.out("rev-parse", "--git-common-dir"))
-        self.home = (common if common.is_absolute() else kernel.root / common) / "ralph-lanes"
+        self.home = self.git.common_dir() / "ralph-lanes"
 
     def run(self) -> int:
         kernel = self.kernel

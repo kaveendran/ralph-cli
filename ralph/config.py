@@ -53,6 +53,8 @@ class LoopConfig:
     tag_format: str = "{cr}-done"       # local tag when a CR converges; "" turns tagging off
     converge: bool = True               # check the finished CR against the spec's acceptance criteria
     max_cost_usd: float = 0.0           # stop the run once it has spent this much (0: no limit)
+    on_usage_limit: str = "stop"        # stop | wait (until the limit resets, then go on)
+    max_wait_hours: float = 6.0         # wait: stop instead when the reset is further away than this
 
 
 @dataclass

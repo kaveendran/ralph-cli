@@ -46,7 +46,7 @@ For a project that used the previous loop, run `ralph migrate --cr N --dry-run` 
 | Select | The next ready unit: one in progress first, then the plan's build order. A blocked unit only holds back the units that depend on it. |
 | Impact check | Teammates' changes (as of your last `ralph sync`) that affect the unit. Local only; see [Working with a team](#working-with-a-team). |
 | Prepare | A **context pack** with only the unit's own plan entry, the spec sections it cites, its dependencies' handoff notes, its last failure, your `ralph steer` notes, the checks it must pass, up to 5 unreviewed lessons that match its files, and 1–3 project skills that fit it. A few thousand tokens, however big the project gets. |
-| Run | One `claude -p` session, **hermetic** (only the project's MCP servers and settings, no auto memory) and **bounded** (turns, budget, time, compaction at 200k tokens). Guardrail hooks stop the agent from committing, pushing or editing harness state. An `explorer` subagent handles codebase searches. |
+| Run | One `claude -p` session, **hermetic** (only the project's MCP servers and settings, no auto memory) and **bounded** (turns, budget, time, compaction at 200k tokens). Guardrail hooks stop the agent from committing, pushing or editing harness state. An `explorer` subagent handles codebase searches, and a `test-runner` subagent runs long test suites and reports only the failures. |
 | Verify | The harness runs the gates itself. An integrity check fails deleted tests, skip markers and frozen paths. For P0 and Large units, a separate read-only reviewer checks the tests against the acceptance criteria. |
 | Commit | Only the files the unit changed, across all its attempts, plus its ledger entry. Your own uncommitted work is never swept in. After 3 failed attempts the unit is blocked, and its work is saved under `refs/ralph/rejected/`. |
 | Record | One line per iteration in `log/iterations.jsonl`: turns, minutes, cost, peak context, compactions, gates, review. |
@@ -68,13 +68,21 @@ ralph sync push         # review what would be published, then push
   - **BREAKING** (an interface it uses changed) and **OVERLAP** (a file it plans to change changed) go into the unit's context. The agent acknowledges what it handled.
   - **DUPLICATE** (a teammate already finished this unit) and **CONFLICT** (its files won't merge with the shared branch) stop the loop until you `ralph sync`.
 - **The shared branch** is your branch's upstream, or `[team] branch`. The loop reminds you when your last fetch is older than 12 hours; it never fetches itself.
+- **Claims and locks** (optional): `ralph claim U012` or `ralph claim --next 3` reserves units, and `ralph lock migrations/` reserves a path. Each one is a ref on the shared remote, taken atomically: if a teammate got there first, the push is refused.
+  - Claims expire after 48 hours unless renewed (`--renew`); an expired one can be taken over (`--take-over`).
+  - The loop never builds a unit a teammate holds. `ralph start --mine` (or `[team] claims = true`) builds only your own.
+  - The guardrail hook won't let the agent edit a path a teammate has locked.
+  - A teammate's claim that plans the same files reaches the unit's context as **CLAIM-OVERLAP**.
+  - `ralph sync push` releases your claims on finished units.
+- **Lessons merge line by line:** every unit can add to `.ralph/learnings/inbox.jsonl`. ralph gives that file git's `union` merge, so teammates' branches and parallel lanes never conflict on it.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `ralph init` / `ralph add-cr` | Set up a project / a change request |
-| `ralph start --cr N` | The build loop. `--max N`, `--unit ID`, `--model`, `--max-turns`, `--max-budget` (per iteration), `--run-budget` (the whole run), `--review off\|p0-and-large\|all` |
+| `ralph start --cr N` | The build loop. `--max N`, `--unit ID`, `--model`, `--max-turns`, `--max-budget` (per iteration), `--run-budget` (the whole run), `--review off\|p0-and-large\|all`, `--mine` (only your claimed units) |
+| `ralph start --lanes N` | Build up to 4 independent units at once, each in its own worktree, then merge them into your branch one at a time: a conflict check, a cherry-pick, then the gates on the combined code. A lane that conflicts is saved and its unit runs again. Spending can run up to N× as fast |
 | `ralph start --mode plan --cr N` | Write the plan from the spec, then compile it into units |
 | `ralph start --task "…"` | One bounded iteration on work outside the plan, e.g. a bug fix |
 | `ralph start --dry-run` | The next unit's context pack and its size, and the exact command. Runs nothing |
@@ -90,10 +98,14 @@ ralph sync push         # review what would be published, then push
 | `ralph sync push` | Show the commits, ledger entries and tags that would be published, then push after you confirm. Never forces |
 | `ralph changes` / `ralph team` | What changed recently and who did it / per developer, plus the files more than one of you changed. As of your last sync |
 | `ralph impact ID` | For an open unit: teammates' changes that affect it. For a finished one: the open units it affects |
+| `ralph claim …` / `release` / `lock PATH` / `unlock PATH` | Reserve units or paths on the shared remote (see [Working with a team](#working-with-a-team)) |
+| `ralph pr ID` | Open a draft pull request holding just that unit's commit, on top of the shared branch, with its ledger entry as the description (needs `gh`) |
 | `ralph memory lint` | Size budgets for `CLAUDE.md`, `AGENTS.md`, rules, skills and unit notes (`--strict` for CI). Also checked at start |
 | `ralph memory review` | Walk the lessons the agent reported, most-recurring first, and promote each one you approve: to a path-scoped rule, `CLAUDE.md`, or a skill. Leaves the edits uncommitted so you can reword them |
 | `ralph memory decay` | Summarise the notes of units finished long ago (the full text moves to `archive/`) and move reviewed lessons out of the inbox |
+| `ralph memory export` | Units, lessons, changes and files as one graph (nodes and edges), for a graph store such as Cognee to index. Serve the store to the agent through an MCP server in `.ralph/mcp.json` |
 | `ralph skills list` / `lint` | The project's skills and how often the loop used them / a check against Anthropic's skill authoring guidance |
+| `ralph skills stats` | For each skill: the iterations that used it against the rest (turns, cost, how often the unit got done) |
 | `ralph skills init --stack "…"` | Draft starter skills for your stack from your dependency versions (one call with no tools). You review them |
 | `ralph skills refresh` | Flag skills and `docs/vendor/<lib>@<version>/` folders written for versions you no longer use |
 | `ralph skills eval [name]` | Run each skill's scenarios (`.claude/skills/<name>/evals/*.json`) through Claude: did it use the skill, and does the answer contain what it should? |

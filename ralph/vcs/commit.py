@@ -23,6 +23,10 @@ from pathlib import Path
 
 from ralph.vcs.git import Git
 
+# The harness's append-only files that every unit can add to. A union merge keeps
+# both sides' lines, so parallel lanes and teammates' branches never conflict on them.
+UNION_MERGE = (".ralph/learnings/*.jsonl merge=union",)
+
 # Untracked files that tools create as a side effect (running tests, installing
 # packages). They're never part of a unit, even in a repo without a .gitignore for them.
 BUILD_ARTIFACT = re.compile(

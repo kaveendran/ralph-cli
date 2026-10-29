@@ -24,6 +24,7 @@ from ralph.team.claims import read_claims, read_locks
 from ralph.team.impact import age, assess, team_view, touches
 from ralph.team.ledger import LEDGER_DIR, read_local, read_pending
 from ralph.team.shared import Shared, ahead_behind, has_ref, last_fetch, local_ref, shared_branch
+from ralph.vcs import commit as vcs
 from ralph.vcs.git import Git
 
 
@@ -146,6 +147,7 @@ def _rebase(project: ProjectPaths, git: Git, shared: Shared, yes: bool) -> int:
     if not yes and not ui.confirm(f"\n  Rebase your branch onto {shared.name}?", default=False):
         ui.info("  Not rebased. The loop already takes these changes into account.")
         return 0
+    git.ensure_attributes(vcs.UNION_MERGE)          # teammates' lessons and yours merge line by line
     result = git.run("rebase", shared.ref, check=False)
     if result.returncode != 0:
         conflicted = git.run("diff", "--name-only", "--diff-filter=U", check=False).stdout.split()

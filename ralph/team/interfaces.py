@@ -2,7 +2,8 @@
 
 This cross-checks what the agent reports in `interfaces_changed`. It reads
 the files before (at HEAD) and after (in the working tree), with Python's
-`ast` for Python and the `export` names for TypeScript and JavaScript.
+`ast` for Python, the `export` names for TypeScript and JavaScript, and the
+operations of OpenAPI documents (team/openapi.py).
 It is best-effort: a removed name or a new required parameter is reliable;
 a change in behaviour isn't visible here at all.
 """
@@ -10,6 +11,7 @@ a change in behaviour isn't visible here at all.
 import ast
 import re
 
+from ralph.team import openapi
 from ralph.vcs.git import Git
 
 TS_EXPORT = re.compile(r"^\s*export\s+(?:default\s+)?(?:declare\s+)?(?:async\s+)?"
@@ -82,15 +84,16 @@ def compare(path: str, before: str, after: str | None) -> list[dict]:
 
 
 def detect(git: Git, paths: list[str]) -> list[dict]:
-    """Compare each changed source file at HEAD with the working tree."""
+    """Compare each changed source file and OpenAPI document at HEAD with the working tree."""
     found = []
     for path in paths:
-        if _reader(path) is None:
+        check = openapi.compare if openapi.is_openapi(path) else compare if _reader(path) else None
+        if check is None:
             continue
         before = git.run("show", f"HEAD:{path}", check=False).stdout
         target = git.root / path
         after = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
-        found += compare(path, before, after)
+        found += check(path, before, after)
     return found
 
 

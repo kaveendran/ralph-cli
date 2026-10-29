@@ -4,12 +4,12 @@ import argparse
 import sys
 
 from ralph import __version__, ui
-from ralph.commands import (claims, control, doctor, graph, memory, migrate, scaffold, skills, start, status, team,
-                            units, watch, workflows)
+from ralph.commands import (claims, control, doctor, graph, memory, migrate, pr, scaffold, skills, start, status,
+                            team, units, watch, workflows)
 from ralph.errors import RalphError
 
-COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, workflows, team, claims, memory, skills,
-                   migrate, doctor)
+COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, workflows, team, claims, pr, memory,
+                   skills, migrate, doctor)
 
 EPILOG = """\
 typical workflow:
@@ -29,6 +29,7 @@ with a team (manual; the loop itself never fetches or pushes):
   ralph sync push                    review what would be published, then push it
   ralph changes / team / impact ID   what changed and who it affects, as of your last sync
   ralph claim --next 3 / lock PATH   reserve units or files so teammates don't collide (release / unlock)
+  ralph pr ID                        or publish one unit as a draft pull request (needs gh)
 
 a project from the previous bash loop: ralph migrate --cr N --dry-run, then ralph migrate --cr N
 """

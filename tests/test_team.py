@@ -12,15 +12,18 @@ import subprocess
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from ralph.cli import main
 from ralph.config import Config, TeamConfig
 from ralph.kernel.loop import Kernel, StartOptions
+from ralph.memory.graph import build
+from ralph.memory.learnings import Learning, write_inbox
 from ralph.model.store import UnitStore
 from ralph.model.unit import Status, Unit
 from ralph.paths import ProjectPaths
-from ralph.team import interfaces
+from ralph.team import interfaces, openapi
 from ralph.team.impact import ImpactReport, Impact, classify, merge_conflicts, symbol, team_view, touches
 from ralph.runner.hooks import decide
 from ralph.team.ledger import LedgerEntry, from_others, new_entry, read_local, read_pending, write_entry
@@ -70,6 +73,55 @@ class Interfaces(unittest.TestCase):
         by_name = {i["name"]: (i["breaking"], i["source"]) for i in merged}
         self.assertEqual(by_name, {"lookup()": (True, "agent+detected"), "GET /search": (False, "agent"),
                                    "fetch()": (True, "detected")})
+
+
+
+class OpenApi(unittest.TestCase):
+    OLD = {"openapi": "3.1.0", "paths": {
+        "/invoices": {"get": {"parameters": [{"name": "page", "in": "query"}]},
+                      "post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/New"}}}}}},
+        "/invoices/{id}": {"delete": {}}},
+        "components": {"schemas": {"New": {"type": "object", "required": ["customer"]}}}}
+
+    def test_removed_operations_and_new_requirements_are_breaking(self):
+        new = json.loads(json.dumps(self.OLD))
+        del new["paths"]["/invoices/{id}"]
+        new["paths"]["/invoices"]["get"]["parameters"].append({"name": "tenant", "in": "header", "required": True})
+        new["paths"]["/invoices"]["post"]["requestBody"]["required"] = True
+        new["components"]["schemas"]["New"]["required"] = ["customer", "currency"]
+        new["paths"]["/reports"] = {"get": {}}                                      # an addition: fine
+        found = {i["name"]: i["change"] for i in openapi.compare("api/openapi.json", json.dumps(self.OLD), json.dumps(new))}
+        self.assertEqual(found, {"GET /invoices": "now requires header:tenant",
+                                 "POST /invoices": "the request body became required; the request body now requires currency",
+                                 "DELETE /invoices/{id}": "removed from api/openapi.json"})
+        self.assertEqual(openapi.compare("api/openapi.json", "", json.dumps(new)), [])     # a new document
+        self.assertTrue(openapi.is_openapi("api/openapi.json") and openapi.is_openapi("billing.openapi.json"))
+        self.assertFalse(openapi.is_openapi("package.json"))
+
+    def test_a_route_change_reaches_a_unit_that_calls_it(self):
+        (impact,) = [i for i in classify(Unit("U9", "Invoice page", "cr2"), "Fetch DELETE /invoices/{id} on click.",
+                                         [entry(breaking=("DELETE /invoices/{id}",))], Path("."))
+                     if i.kind == "BREAKING"]
+        self.assertIn("used in your plan entry", impact.line)
+
+
+class GraphExport(TempDirTestCase):
+    def test_units_changes_lessons_and_files_become_one_graph(self):
+        root = make_repo(self.tmp / "repo")
+        project = ProjectPaths(root)
+        store = UnitStore(project.cr("cr1").units_dir)
+        store.save(Unit("U001", "Search", "cr1", status=Status.DONE, key_files=["serve/search.py"]))
+        store.save(Unit("U002", "Filters", "cr1", depends_on=["U001"]))
+        write_entry(root, new_entry("U001", "cr1", "Search", "A", "a@x", "", [("A", "serve/search.py")],
+                                    [{"name": "search()", "breaking": True}], "Added search.", []))
+        write_inbox(project.learnings_inbox, [Learning("Use the session fixture", paths=["tests/**"], unit="U001", cr="cr1")])
+        graph = build(project)
+        kinds = sorted({n["kind"] for n in graph["nodes"]})
+        self.assertEqual(kinds, ["change", "file", "lesson", "unit"])
+        relations = {(e["from"].split(":")[0], e["rel"], e["to"].split(":")[0]) for e in graph["edges"]}
+        self.assertEqual(relations, {("unit", "depends_on", "unit"), ("unit", "plans", "file"),
+                                     ("change", "implements", "unit"), ("change", "touched", "file"),
+                                     ("lesson", "learned_in", "unit"), ("lesson", "applies_to", "file")})
 
 
 def entry(unit="U037", email="b@example.com", paths=("serve/lookup.py",), breaking=("lookup()",), at=None,
@@ -407,6 +459,43 @@ class ClaimsAndLocks(TwoClonesCase):
         self.ralph(self.a, "sync", "--no-rebase")
         runner = self.kernel(self.a, done_step("U001", {"serve/lookup.py": LOOKUP_V2}), max_iterations=1)
         self.assertIn("[CLAIM-OVERLAP] cr1/U002 is claimed by Dev B until", runner.calls[0].prompt)
+
+
+
+class PullRequests(TwoClonesCase):
+    def fake_gh(self) -> Path:
+        calls = self.tmp / "gh-calls.json"
+        gh = self.tmp / "bin" / "gh"
+        gh.write_text(f"#!/usr/bin/env python3\nimport json, sys\njson.dump(sys.argv[1:], open('{calls}', 'w'))\n"
+                      "print('https://github.com/acme/shop/pull/7')\n")
+        gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+        return calls
+
+    def test_a_draft_pr_holds_only_the_units_own_commit(self):
+        calls = self.fake_gh()
+        self.kernel(self.a, done_step("U001", {"serve/lookup.py": LOOKUP_V2}), only_units=["U001"])
+        code, output = self.ralph(self.a, "pr", "U001", "--cr", "1", "--base", "main", "--yes")
+        self.assertEqual(code, 0, output)
+        self.assertIn("Draft PR: https://github.com/acme/shop/pull/7", output)
+        branch = "refs/heads/ralph/pr/cr1-U001"
+        self.assertEqual(git(self.origin, "rev-parse", f"{branch}~1"), git(self.origin, "rev-parse", "main"))
+        self.assertEqual(git(self.origin, "log", "-1", "--format=%s", branch), "U001: Paged lookup")
+        argv = json.loads(calls.read_text())
+        self.assertEqual(argv[:5], ["pr", "create", "--draft", "--base", "main"])
+        body = argv[argv.index("--body") + 1]
+        self.assertIn("- `serve/lookup.py` (M)", body)
+        self.assertIn("## Breaking changes\n\n- `lookup()`", body)
+        self.assertEqual(git(self.a, "status", "--porcelain", "serve"), "")           # your tree untouched
+
+    def test_a_unit_that_needs_unpublished_work_is_refused(self):
+        self.fake_gh()
+        self.kernel(self.a, done_step("U001", {"serve/lookup.py": LOOKUP_V2}),
+                    done_step("U002", {"serve/lookup.py": LOOKUP_V2 + "# skim support\n"}))
+        code, output = self.ralph(self.a, "pr", "U002", "--cr", "1", "--base", "main", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("doesn't apply to origin/main on its own", output)
+        self.assertNotIn("ralph/pr/", git(self.origin, "branch", "--list"))
+        self.assertEqual(git(self.a, "branch", "--list", "ralph/pr/*"), "")
 
 
 class NoNetwork(TempDirTestCase):

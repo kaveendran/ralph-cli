@@ -33,7 +33,8 @@ for name in json.loads(os.environ.get("FAKE_FILES", "{}")).get(unit, [unit + ".t
 def emit(event): print(json.dumps(event), flush=True)
 emit({"type": "system", "subtype": "init", "session_id": "s", "claude_code_version": "2.1.311"})
 emit({"type": "result", "subtype": "success", "num_turns": 1, "total_cost_usd": 0.01, "duration_ms": 1000,
-      "structured_output": {"unit": unit, "status": "done", "summary": "did " + unit}})
+      "structured_output": {"unit": unit, "status": "done", "summary": "did " + unit,
+                            "learnings": [{"rule": "a lesson from " + unit}]}})
 '''
 CONFIG = """[verify]
 review = "off"
@@ -106,6 +107,13 @@ class Lanes(TempDirTestCase):
     def test_independent_units_run_side_by_side_then_the_rest_in_order(self):
         output = self.run_lanes()
         self.assertIn("Lanes round 1: U001, U002", output)
+        # Both lanes added a lesson to the same inbox; seen in a real run, it conflicted until the
+        # inbox got a union merge (.git/info/attributes).
+        self.assertIn("U002 merged from its lane", output)
+        self.assertNotIn("set aside", output)
+        inbox = self.project.learnings_inbox.read_text()
+        self.assertIn("a lesson from U001", inbox)
+        self.assertIn("a lesson from U002", inbox)
         self.assertEqual(git(self.root, "log", "-3", "--format=%s").splitlines(), ["U003: C", "U002: B", "U001: A"])
         self.assertTrue(all(u.status is Status.DONE for u in self.store.load().values()))
         self.assertEqual(len(git(self.root, "worktree", "list").splitlines()), 1)          # lanes removed

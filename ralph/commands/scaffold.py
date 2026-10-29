@@ -22,6 +22,7 @@ from ralph.runner import compat
 from ralph.runner.base import AgentCall
 from ralph.runner.cli_backend import CliRunner
 from ralph.runner.settings import agent_env, project_mcp_config
+from ralph.vcs.commit import UNION_MERGE
 
 TYPES = ("backend+frontend", "backend", "frontend", "api", "database", "infrastructure", "refactor", "feature")
 CONSTRAINTS = {
@@ -125,6 +126,13 @@ def ensure_project_files(project: ProjectPaths, name: str, description: str) -> 
         write_text_atomic(claude_md, render_template("project-map.md", PROJECT_NAME=name,
                                                      DESCRIPTION=description or "(one line about the project)"))
         ui.info("  create  CLAUDE.md")
+    attributes = project.root / ".gitattributes"
+    present = read_text(attributes)
+    wanted = [line for line in UNION_MERGE if line not in present.splitlines()]
+    if wanted:
+        write_text_atomic(attributes, present.rstrip("\n") + ("\n" if present else "") +
+                          "# ralph: lessons from different units merge line by line\n" + "\n".join(wanted) + "\n")
+        ui.info("  update  .gitattributes (lessons merge line by line)")
     gitignore = project.root / ".gitignore"
     existing = read_text(gitignore)
     missing = [line for line in GITIGNORE_LINES if line not in existing.split()]

@@ -94,6 +94,7 @@ class Kernel:
         self.email = self.git.run("config", "user.email", check=False).stdout.strip()
         self.failures = self.invalid_results = self.stalls = self.repairs = 0
         self.spent_usd = 0.0
+        self.free_iterations = 0             # usage-limit waits, which don't count toward --max
         self.done_units: set[str] | None = None
         self.converged_once = False
         self._plan_cache: tuple[float, Plan | None] | None = None
@@ -107,7 +108,7 @@ class Kernel:
         with RunLock(self.project.lock):
             self.preflight()
             iteration = 0
-            while not (self.options.max_iterations and iteration >= self.options.max_iterations):
+            while not self.reached_max(iteration):
                 self.control.wait_while_paused(
                     on_wait=lambda: ui.info("  Paused after the last iteration. Run 'ralph resume' to continue."))
                 broken = self.health_check(iteration)
@@ -129,9 +130,13 @@ class Kernel:
                 iteration += 1
                 if stop or self.over_budget():
                     break
-            if self.options.max_iterations and iteration >= self.options.max_iterations:
+            if self.reached_max(iteration):
                 ui.info(f"\n  Reached --max {self.options.max_iterations}.")
         return 0
+
+    def reached_max(self, iteration: int) -> bool:
+        """`--max N` counts iterations, not counting usage-limit waits."""
+        return bool(self.options.max_iterations) and iteration - self.free_iterations >= self.options.max_iterations
 
     def iterate(self, iteration: int, unit: Unit, units: dict[str, Unit]) -> bool:
         """Run one unit through every phase. Returns True when the loop should stop."""
@@ -171,6 +176,7 @@ class Kernel:
         compat.find_claude()
         version = compat.check_version(runner_config.claude_version, allow_drift=self.options.allow_version_drift)
         self._check_branch()
+        self.git.ensure_attributes(vcs.UNION_MERGE)
         if not self.git.user_configured():
             raise RalphError("git has no user.email set, so the harness can't commit.",
                              "Set it with: git config user.name 'Your Name' && git config user.email you@example.com")
@@ -498,10 +504,7 @@ class Kernel:
         if result.usage_limited:
             self._keep_wip(unit, snapshot)
             self.record(iteration, unit, "usage_limit", result, snapshot, run_dir)
-            ui.warn("The Claude usage limit was reached. Stopping; run 'ralph start' again after it resets.")
-            self.notifier.send("usage_limit", f"the usage limit was reached during {unit.id}; the loop stopped",
-                               cr=self.cr.name, unit=unit.id)
-            return True
+            return not self.wait_for_reset(unit, result.stats.usage_resets_at)
         if result.failed:
             self._keep_wip(unit, snapshot)
             return self._agent_failed(iteration, unit, result, snapshot, run_dir)
@@ -542,6 +545,26 @@ class Kernel:
         self.store.append_note(unit.id, "Too big for one session?", f"Its runs {unit.size_warning}. Consider "
                                "splitting it in the plan (`ralph graph compile --analyze` suggests how).")
         ui.warn(f"{unit.id} {unit.size_warning}: it's probably too big for one session; consider splitting it.")
+
+    def wait_for_reset(self, unit: Unit, resets_at: int | None) -> bool:
+        """With `[loop] on_usage_limit = "wait"`, sleep until the limit resets and go on
+        (the wait doesn't count toward --max). Returns False when the loop should stop."""
+        loop = self.config.loop
+        wait = (resets_at - time.time()) if resets_at else None
+        if loop.on_usage_limit != "wait" or wait is None or wait > loop.max_wait_hours * 3600:
+            why = "" if loop.on_usage_limit != "wait" else " (the reset is too far off, or unknown)"
+            ui.warn(f"The Claude usage limit was reached{why}. Stopping; run 'ralph start' again after it resets.")
+            self.notifier.send("usage_limit", f"the usage limit was reached during {unit.id}; the loop stopped",
+                               cr=self.cr.name, unit=unit.id)
+            return False
+        until = datetime.fromtimestamp(resets_at).strftime("%H:%M")
+        ui.warn(f"The Claude usage limit was reached; waiting until {until} for it to reset (Ctrl-C to stop).")
+        self.notifier.send("usage_limit", f"the usage limit was reached during {unit.id}; waiting until {until}",
+                           cr=self.cr.name, unit=unit.id)
+        while time.time() < resets_at + 60:
+            time.sleep(min(60.0, max(resets_at + 60 - time.time(), 0.1)))
+        self.free_iterations += 1
+        return True
 
     def _agent_failed(self, iteration, unit, result, snapshot, run_dir) -> bool:
         self.failures += 1
@@ -736,6 +759,9 @@ class Kernel:
                 f"· {summary.get('compactions', 0)} compactions · {summary.get('subagent_calls', 0)} subagent calls")
         if notes and outcome not in ("done",):
             ui.info(f"  Why: {notes}")
+        if summary.get("permission_denials"):
+            ui.warn(f"{summary['permission_denials']} tool call(s) were denied by the permission settings "
+                    f"(runner.permissions = {self.config.runner.permissions}); see {run_dir / 'stream.jsonl'}.")
 
     # 9. Decide
 

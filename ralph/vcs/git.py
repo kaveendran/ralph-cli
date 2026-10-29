@@ -72,5 +72,20 @@ class Git:
         result = self.run("check-ignore", "--stdin", check=False, input_text="\n".join(paths) + "\n")
         return set(result.stdout.split("\n")) - {""}
 
+    def common_dir(self) -> Path:
+        """The repository's shared .git folder, also from inside a worktree."""
+        path = Path(self.out("rev-parse", "--git-common-dir"))
+        return path if path.is_absolute() else self.root / path
+
+    def ensure_attributes(self, lines: tuple[str, ...]) -> None:
+        """Add gitattributes lines for this clone only (.git/info/attributes, never committed)."""
+        path = self.common_dir() / "info" / "attributes"
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        missing = [line for line in lines if line not in existing.splitlines()]
+        if missing:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(existing + ("" if not existing or existing.endswith("\n") else "\n")
+                            + "".join(line + "\n" for line in missing), encoding="utf-8")
+
     def user_configured(self) -> bool:
         return bool(self.run("config", "user.email", check=False).stdout.strip())

@@ -20,6 +20,7 @@ from ralph.skills.evals import run_evals, scenarios
 from ralph.skills.generate import generate_stack_skills
 from ralph.skills.lint import lint_skills
 from ralph.skills.refresh import stale_docs, stale_skills
+from ralph.skills.stats import compare
 from ralph.skills.registry import discover, skills_dir
 
 
@@ -36,6 +37,9 @@ def register(subparsers) -> None:
 
     actions.add_parser("refresh", help="flag skills and vendored docs written for other dependency versions"
                        ).set_defaults(handler=run_refresh)
+
+    actions.add_parser("stats", help="did iterations that used each skill do better than those that didn't?"
+                       ).set_defaults(handler=run_stats)
 
     init = actions.add_parser("init", help="draft starter skills for your stack with Claude, for you to review")
     init.add_argument("--stack", default="", help='e.g. "FastAPI + SQLAlchemy 2 + React 19"')
@@ -89,6 +93,24 @@ def run_refresh(args) -> int:
     ui.info("  Update each one for the new version (stale guidance is worse than none), then change its "
             "ralph-versions: entry, or the folder name for a vendored doc.")
     return 1
+
+
+def run_stats(args) -> int:
+    project, _ = load_project()
+    effects = compare(read_records(project.iterations_log))
+    if not effects:
+        ui.info("  No iteration has used a skill yet (log/iterations.jsonl records which ones each used).")
+        return 0
+    ui.header("skills stats", "unit iterations that used each skill, against the ones that didn't")
+    ui.info(f"  {'skill':<28} {'':>9} {'iters':>5} {'turns':>6} {'$':>6} {'done':>5}")
+    for effect in effects:
+        for label, group in (("used", effect.used), ("not used", effect.unused)):
+            name = effect.skill if label == "used" else ""
+            ui.info(f"  {name:<28} {label:>9} {group.iterations:>5} {group.turns:>6.1f} {group.cost_usd:>6.2f} "
+                    f"{group.done:>5.0%}")
+    ui.info("\n  A correlation, not an experiment: units that need a skill may be harder. Trust a difference "
+            "only after a few dozen iterations.")
+    return 0
 
 
 def run_init(args) -> int:

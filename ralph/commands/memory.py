@@ -6,13 +6,17 @@
   What it writes is left uncommitted, so you can reword it before you commit.
 - decay: summarise the notes of units finished long ago and archive the
   full text, and move reviewed lessons out of the inbox.
+- export: everything above as one graph, for a graph store (memory/graph.py).
 """
 
+import json
 from pathlib import Path
 
 from ralph import ui
 from ralph.commands.common import load_cr, load_project, require_units
+from ralph.fsutil import write_text_atomic
 from ralph.memory.decay import archive_reviewed, decay
+from ralph.memory.graph import build
 from ralph.memory.learnings import group, read_inbox, write_inbox
 from ralph.memory.lint import lint_memory
 from ralph.memory.promote import apply, propose
@@ -37,6 +41,10 @@ def register(subparsers) -> None:
     d.add_argument("--keep", type=int, default=5, help="leave the notes of the N most recently done units (default 5)")
     d.add_argument("--dry-run", action="store_true", help="show what would change")
     d.set_defaults(handler=run_decay)
+
+    e = actions.add_parser("export", help="write units, lessons and changes as one graph, for a graph store")
+    e.add_argument("--out", help="write to this file (default: print it)")
+    e.set_defaults(handler=run_export)
 
 
 def _shown(path: Path, root: Path) -> str:
@@ -118,4 +126,16 @@ def run_decay(args) -> int:
             paths += [project.learnings_inbox, project.learnings_inbox.with_name("archive.jsonl")]
         vcs.commit_paths(git, [_shown(p, project.root) for p in paths if p.exists()],
                          f"ralph: memory decay for {cr.name}")
+    return 0
+
+
+def run_export(args) -> int:
+    project, _ = load_project()
+    graph = build(project)
+    text = json.dumps(graph, indent=2, ensure_ascii=False) + "\n"
+    if not args.out:
+        print(text, end="")
+        return 0
+    write_text_atomic(Path(args.out), text)
+    ui.ok(f"Wrote {len(graph['nodes'])} nodes and {len(graph['edges'])} edges to {args.out}.")
     return 0

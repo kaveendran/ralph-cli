@@ -837,6 +837,8 @@ These changes stay useful until the new harness replaces the bash loop.
 | P1 | **Core done.** `ralph init`, `add-cr`, `start` (build, plan, `--task`, `--dry-run`), `status`, `graph`, `ready`, `unblock`, `set`, `steer`, `pause`, `resume`, `watch`, `migrate` and `doctor` run on the Python harness. `critique`, `refine-plan`, `retro` and `deploy` still run the original bash scripts. | 88 Python tests and the 148 original bash tests pass. A real run of the new harness on a toy project: two units in dependency order, each through gates and review, committed; convergence check passed; tagged. A migrated copy of the real cr2 dry-runs at ~3.6k tokens. |
 | P2 | **Done.** Memory: lessons captured from each result, matched into later packs, promoted with `memory review`, budgets checked by `memory lint` and at start, old notes summarised by `memory decay`. Skills: `skills list`, `lint`, `refresh`, `init --stack`, `eval`, and 1–3 suggestions per pack. Extras: `graph compile --analyze`, `watch --serve`, `[notify]`, review cost in the telemetry. | 127 Python tests and the 148 bash tests pass. Real calls on a toy project (§20, rows 12–14) cost $0.043 in total. |
 | P3a | **Done**, except the optional `ralph pr`. Ledger entries committed with each unit and task. The impact check before each unit: DUPLICATE and CONFLICT stop; BREAKING and OVERLAP go into the pack and can be acknowledged. `ralph sync` (fetch, report, rebase only on yes), `sync push` (review, push only on yes, never forced), and the local views `changes`, `team` and `impact`. | 143 Python tests pass, including the exit check: two clones of a bare remote. B's `sync` shows A's BREAKING and OVERLAP. Nothing is pushed on "no". B's loop refuses to rebuild A's unit and stops on a conflict in its files. A whole iteration with a shared branch configured makes **no network calls**: a git transport trap and a socket patch both stay silent, and the kernel doesn't even import `team.remote`. |
+| P3b | **Done** (built on request, without waiting for collisions). Claims with leases, locks, `--mine`, CLAIM-OVERLAP. | Two clones of a bare remote: a competing claim is refused, an expired one can be taken over, a teammate's lock blocks edits through the hook, and `sync push` releases finished claims. |
+| P4 | **Done** (built on request). `start --lanes N`. | A fake-agent test of two lanes plus a conflict, and a real two-lane Haiku run where both units merged from their lanes. |
 | P5 | **Done.** The review and delivery workflows run on the harness, and the bash code is gone (details below). | The Python tests pass and replace `test/e2e.sh`. Real Haiku runs of `critique` and `deploy scaffold` on a toy project are in §20, rows 15–16. |
 
 **What building P1 taught us** (each is now handled, with a test):
@@ -876,7 +878,16 @@ These changes stay useful until the new harness replaces the bash loop.
 - **`ralph add-unit`:** adds a unit by hand, with a hash-suffixed ID like discovered units.
 - **Permission modes from §12.5:** `container`, `strict` and `sandbox` work as well as `bypass` (§20, rows 17–18).
 
-Still not built from the table: `ralph pr` (optional), the `test-runner` subagent (see the P2 notes), and graph memory ("later").
+**Everything else, built afterwards (2026-10-30), at your request:**
+- **P3b claims and locks:** `claim` (`--next`, `--renew`, `--take-over`), `release` (`--done`), `lock` and `unlock`. Each is a compare-and-swap push of a ref under `[team] refs` (default `refs/ralph`, or `refs/heads/ralph-claims` for hosts that reject custom refs). The loop reads only the local copy, so it still makes no network calls. Tested with two clones of a bare remote; GitHub itself isn't verified (§20 row 4).
+- **P4 lanes:** `start --lanes N`. Each lane is a child `ralph start --unit U --max 1` in a worktree under `.git/ralph-lanes/`. Merges are serialized in build order: merge-tree check, cherry-pick, gates.
+- **Also:** `ralph pr` (draft PR per unit through `gh`), the `test-runner` subagent, `skills stats`, OpenAPI checks in the ledger, `memory export` (the graph-memory extension point), `[loop] on_usage_limit = "wait"`, permission denials in the summary, `watch` and the dashboard, and a verified `pip install` (a pipx install works the same way).
+
+**What building those taught us:**
+- **The lessons inbox conflicted between lanes.** In a real two-lane run (Haiku), both lanes added a lesson to `.ralph/learnings/inbox.jsonl`, so the second lane's merge conflicted and its unit was built twice. The inbox now has git's `union` merge, in `.git/info/attributes` (set at every preflight) and in `.gitattributes` (set by `ralph init`). The same fix covers teammates rebasing in `ralph sync`.
+- **Re-pushing an identical claim commit isn't a conflict.** git reports it up to date. A competing claim is a different commit, and that is refused.
+- **Lanes run in child processes.** That keeps the kernel single-threaded and each lane a normal, fully verified iteration. The parent's own settings (like a test patch) don't reach the lanes.
+
 
 **What building P5 taught us:**
 - **The old Ctrl-C didn't stop the experts.** Each `claude` runs in its own process group, so the terminal's Ctrl-C never reached it. Calls now carry a cancel signal the runner checks every second.

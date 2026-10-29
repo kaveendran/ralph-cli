@@ -32,7 +32,7 @@
 </section>
 
 <section><b>Iterations</b>
-  <div class="scroll"><table><thead><tr><th>run</th><th>#</th><th>unit</th><th>outcome</th><th class="num">turns</th><th class="num">min</th><th class="num">$</th><th class="num">peak context</th><th class="num">compactions</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div class="scroll"><table><thead><tr><th>run</th><th>#</th><th>unit</th><th>outcome</th><th class="num">turns</th><th class="num">min</th><th class="num">$</th><th class="num">peak context</th><th class="num">compactions</th><th class="num">denied</th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
 
 <script>
@@ -60,6 +60,7 @@ function render(state) {
     cell(row, a.num_turns || 0, "num"); cell(row, ((a.duration_ms || 0) / 60000).toFixed(1), "num");
     cell(row, ((a.total_cost_usd || 0) + (r.review_cost_usd || 0)).toFixed(2), "num"); cell(row, (a.peak_context || 0).toLocaleString(), "num");
     cell(row, a.compactions || 0, "num");
+    cell(row, a.permission_denials || 0, "num");
   }
 }
 const events = new EventSource("/events");
