@@ -1,308 +1,145 @@
 # ralph-cli
 
-Bash CLI for bootstrapping and running the **Ralph Loop** — a headless Claude Code iteration system for autonomously implementing software change requests from written specs.
+A meta-harness for Claude Code. It builds software from a written spec, **one bounded, verified unit of work per iteration**:
+
+```
+spec → plan → units → [ pick a unit → give Claude only that unit's context → run it, bounded
+                        → the harness runs the tests → a read-only reviewer checks them → commit ] → repeat
+```
+
+The harness owns everything deterministic: which unit runs, what context Claude sees, the limits on each run, the test gates, the commits and the records. Claude owns the creative step: implementing the one unit in front of it. The design, the research behind it and the measurements that motivated it are in [docs/meta-harness-plan.md](docs/meta-harness-plan.md).
 
 ## Install
 
+Needs Python 3.11+, git, and [Claude Code](https://code.claude.com) on your PATH. No other dependencies.
+
 ```bash
 cd ralph-cli
-./install.sh
+./install.sh          # an alias, or a symlink in /usr/local/bin
+ralph doctor          # checks Claude Code, git and the project config
 ```
 
-Then reload your shell (`source ~/.bashrc`) and confirm:
+## Start a project
 
 ```bash
-ralph help
+cd my-project && git init
+ralph init                               # .ralph/config.toml, CLAUDE.md, development/initial/
+#   …write development/initial/spec/spec.md (number its sections: §1, §1.1, …)
+#   …check the gates (your test commands) in .ralph/config.toml
+git switch -c ralph/initial              # the loop won't commit to main
+ralph start --mode plan --cr initial     # Claude writes the plan; the harness compiles it into units
+ralph graph                              # review the units and their order
+ralph start --cr initial                 # the build loop
+ralph watch                              # (another terminal) follow it live
 ```
+
+`ralph init --brief "what you want to build" --stack "Python/FastAPI"` asks Claude to draft the spec for you to review. Later changes go through `ralph add-cr --number 2 --title "…"`.
+
+For a project that used the previous loop, run `ralph migrate --cr N --dry-run` to see what would change, then `ralph migrate --cr N` on a branch.
+
+## What one iteration does
+
+| Phase | What happens |
+|---|---|
+| Select | The next ready unit: one in progress first, then the plan's build order. A blocked unit only holds back the units that depend on it. |
+| Prepare | A **context pack** with only the unit's own plan entry, the spec sections it cites, its dependencies' handoff notes, its last failure, your `ralph steer` notes and the checks it must pass. A few thousand tokens, however big the project gets. |
+| Run | One `claude -p` session, **hermetic** (only the project's MCP servers and settings, no auto memory) and **bounded** (turns, budget, time, compaction at 200k tokens). Guardrail hooks stop the agent from committing, pushing or editing harness state. An `explorer` subagent handles codebase searches. |
+| Verify | The harness runs the gates itself. An integrity check fails deleted tests, skip markers and frozen paths. For P0 and Large units, a separate read-only reviewer checks the tests against the acceptance criteria. |
+| Commit | Only the files the unit changed, across all its attempts. Your own uncommitted work is never swept in. After 3 failed attempts the unit is blocked, and its work is saved under `refs/ralph/rejected/`. |
+| Record | One line per iteration in `log/iterations.jsonl`: turns, minutes, cost, peak context, compactions, gates, review. |
+
+When every unit is done, a convergence check compares the implementation with the spec's acceptance criteria. Any gaps become new units; otherwise the CR is tagged `<cr>-done` locally. **The loop never pushes, fetches or rebases.** Publishing is up to you.
 
 ## Commands
 
-### `ralph init`
+| Command | What it does |
+|---|---|
+| `ralph init` / `ralph add-cr` | Set up a project / a change request |
+| `ralph start --cr N` | The build loop. `--max N`, `--unit ID`, `--model`, `--max-turns`, `--max-budget`, `--review off\|p0-and-large\|all` |
+| `ralph start --mode plan --cr N` | Write the plan from the spec, then compile it into units |
+| `ralph start --task "…"` | One bounded iteration on work outside the plan, e.g. a bug fix |
+| `ralph start --dry-run` | The next unit's context pack and its size, and the exact command. Runs nothing |
+| `ralph status` | Progress, what runs next, blocked and triage units, per-unit time, cost and context. `--write` generates `PROGRESS.md` |
+| `ralph graph` / `ralph ready` | The units and their dependencies (`--mermaid`, `--json`) / what can start now |
+| `ralph graph compile` | Plan → units, after you edit the plan. Rejects units with more than 8 key files unless `--allow-large` |
+| `ralph unblock ID` / `ralph set ID …` | Change a unit by hand; `set ID --status todo` accepts a triage unit |
+| `ralph steer "…"` | A note for the next unit pack, without stopping the loop. `--hard "<cmd>"` adds a check every unit must pass |
+| `ralph pause` / `ralph resume` | Let the current iteration finish, then wait |
+| `ralph watch` | Follow the running loop: tool calls, context, cost |
+| `ralph migrate --cr N` | Move a CR from the previous loop (keeps its statuses and notes) |
+| `ralph doctor [--live]` | Check the setup; `--live` makes one tiny real call (about a cent) |
+| `ralph critique`, `refine-plan`, `retro`, `deploy` | Plan review and delivery workflows (still the original bash scripts) |
+| `ralph legacy <command>` | Run any original bash command, e.g. the previous loop for a CR that isn't migrated |
 
-Bootstrap the Ralph pattern into any project directory.
+## Configuration
+
+`.ralph/config.toml` (written by `ralph init` and `ralph migrate`):
+
+```toml
+[runner]
+model_build = "sonnet"
+max_turns = 200            # per iteration
+max_budget_usd = 30
+compact_window = 200000
+# claude_version = "2.1.311"   # pin it: the loop stops if Claude Code changes
+
+[verify]
+review = "p0-and-large"
+frozen = []                # globs the agent must never change
+paid_gates = []            # gates that only run for units with "Spend: paid"
+
+[verify.gates]             # what decides "done"
+unit = "bash scripts/test-unit.sh"
+api = "bash scripts/test-api.sh"
+
+[verify.by_type]
+default = ["unit"]
+api = ["unit", "api"]
+```
+
+## Project layout
+
+```
+.ralph/config.toml                     committed: harness settings
+.ralph/learnings/inbox.jsonl           committed: lessons the agent reported
+development/<cr>/spec/spec.md          you write it
+development/<cr>/plan/…-plan.md        plan mode writes it; you review it
+development/<cr>/units/U012.json       unit state, written only by the harness
+development/<cr>/units/U012.notes.md   failures, review gaps and handoffs per unit
+development/<cr>/prompts/instructions.md   CR rules included in every unit pack
+log/                                   ignored: iterations.jsonl and per-iteration run folders
+```
+
+## Safety
+
+- **Runs are hermetic and bounded**, and the harness commits only the unit's own files.
+- **The guardrail hooks prevent accidents, not deliberate misuse.** The agent runs with permissions skipped so it can work unattended, so for overnight or unattended runs use a container or the OS sandbox.
+
+## Development
 
 ```bash
-cd my-project
-ralph init
+PYTHONPATH=. python3 -P -m unittest discover -s tests -t .   # the harness (stdlib only)
+bash test/e2e.sh                                              # the original bash commands
 ```
 
-**Flags (all optional):**
+## The previous loop
 
-| Flag | Description |
-|------|-------------|
-| `--auto` | Skip mode prompt — Claude generates the initial spec from your brainstorm |
-| `--manual` | Skip mode prompt — creates scaffold only; you write the spec yourself |
-| `--project-dir PATH` | Target directory (defaults to `.`) |
+The original bash commands are still here, under `commands/`, and run with `ralph legacy <command>` (or `RALPH_LEGACY=1 ralph <command>`). `ralph legacy start --cr N` is the previous loop, already improved with the same quick fixes:
+- compaction at 200k
+- hermetic runs
+- turn and budget caps
+- one unit per iteration
+- the explorer subagent
+- telemetry in `log/index.jsonl`
+- no automatic pushes
 
-**Interactive prompts:**
-1. Project name and one-line description
-2. Mode: **Auto** (Claude generates spec) or **Manual** (stub created)
-3. Implementation type: `backend+frontend` · `backend` · `frontend` · `feature`
-4. *(Auto mode only)* Tech stack and free-form brainstorm/goals/constraints
-5. *(Backend types only)* Whether to generate Docker test infrastructure
-
-**Auto mode** collects your tech stack and brainstorm, then calls Claude Sonnet (~30 seconds) to produce a fully structured 11-section specification. After scaffolding, it offers to immediately run the planning loop.
-
-**Docker test infrastructure** (backend/backend+frontend only) generates:
-- `docker-compose.test.yml` — isolated test environment
-- `scripts/test-unit.sh`, `scripts/test-api.sh` — layered test runners
-- `scripts/test-e2e.sh` + `e2e/playwright.config.ts` — E2E runner (backend+frontend)
-- `.claude/settings.json` — Claude settings with Playwright MCP integration
-
-**Creates if missing:**
-
-```
-AGENTS.md
-CLAUDE.md
-loop_plan.sh / loop_cr.sh
-development/
-├── templates/implementation-planning.md
-├── shared/
-└── initial/
-    ├── spec/spec.md
-    ├── plan/
-    ├── progress/implementation-progress.md
-    └── prompts/build.md, spec-planning.md
-```
-
----
-
-### `ralph add-cr`
-
-Scaffold a new change request. Runs interactively if no flags are given.
-
-```bash
-ralph add-cr --number 5 --title "WDL Activity Extensions" --type backend
-```
-
-**Flags (all optional — prompts for missing ones):**
-
-| Flag | Description |
-|------|-------------|
-| `--number N` | CR number (e.g. `22`) |
-| `--title "..."` | Short title |
-| `--type TYPE` | `backend` · `frontend` · `backend+frontend` · `feature` · `api` · `database` · `infrastructure` · `refactor` |
-| `--prior-cr N` | Prior CR number — adds a baseline reference link in the build prompt |
-| `--spec-file PATH` | Copy an existing file as the spec (instead of a blank stub) |
-| `--notes "..."` | Special notes embedded in the build prompt |
-
-**Creates under `development/crN/`:**
-- `spec/spec.md` — spec stub (or copy of `--spec-file`)
-- `prompts/build.md` — pre-filled build prompt with tech constraints and test commands
-- `prompts/spec-planning.md` — pre-filled planning prompt
-- `progress/implementation-progress.md` — empty progress tracker
-- `plan/crN-implementation-plan.md` — plan file frontmatter
-
-Test commands and tech constraints in the build prompt are auto-populated based on `--type` and whether `docker-compose.test.yml` exists in the project root.
-
-After scaffolding, offers to update `loop_plan.sh` to point to the new CR's prompts.
-
----
-
-### `ralph start`
-
-Run the Ralph Loop.
-
-```bash
-# Generate implementation plan for CR5
-ralph start --mode plan --cr 5
-
-# Start implementation loop for CR5
-ralph start --mode build --cr 5
-
-# Cap at 10 iterations, use Opus
-ralph start --mode build --cr 5 --max 10 --model opus
-
-# Use an explicit prompt file
-ralph start --mode build --prompt development/cr5/prompts/build.md
-```
-
-**Flags:**
+Its extra flags:
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `--mode` | `build` | `plan` or `build` |
-| `--cr N` | — | CR number (auto-resolves prompt path) |
-| `--prompt PATH` | — | Explicit prompt file (overrides `--cr`) |
-| `--max N` | `1` (plan) / `0` = unlimited (build) | Stop after N iterations |
-| `--model` | `opus` (plan) / `sonnet` (build) | Claude model |
-| `--max-turns N` | `300` (plan) / `200` (build) | Turn cap per iteration |
-| `--max-budget USD` | `60` (plan) / `30` (build) | Spend cap per iteration (Claude's own estimate) |
-| `--compact-window N` | `200000` | Auto-compact when context reaches N tokens (the default on 1M-context models is ~967K, which never triggers) |
-| `--setting-sources LIST` | `project,local` | Which Claude settings to load; leaves out your personal plugins and hooks |
-| `--no-hermetic` | — | Use your full personal Claude setup (all MCP servers, plugins, auto memory) |
-| `--push` | off | Push the branch after each iteration. Without it, the loop never pushes |
-| `--dry-run` | — | Show the next iteration's unit, prompt size and command, without calling Claude or writing anything |
-| `--max-stalls N` | `3` | Stop after N iterations in a row with no progress (`0` disables) |
-| `--no-stop-regress` | — | Don't stop when the completed-unit count goes down |
-
-The `RALPH_MAX_TURNS`, `RALPH_MAX_BUDGET`, `RALPH_COMPACT_WINDOW` and `RALPH_SETTING_SOURCES` environment variables set the same defaults.
-
-**Hermetic runs (default).** Each iteration loads only the project's MCP servers (`.ralph/mcp.json`, or a `.mcp.json` committed to the repo), only project and local settings, and no auto memory. Your personal MCP servers, claude.ai connectors and plugins stay out of loop runs.
-
-If neither `--cr` nor `--prompt` is given, `ralph start` reads the prompt path from `loop_plan.sh` in the project root, or falls back to `development/initial/prompts/`.
-
-**Plan mode** — reads `spec-planning.md` and orchestrates 20 subagents:
-- 15 extraction agents split the spec into sections and extract structured requirements in parallel
-- 5 synthesis agents produce: gap analysis, unit decomposition (P0–P3 priority + size + dependency graph), test strategy, risk analysis, and traceability matrix
-- Writes the finished plan to `development/crN/plan/crN-implementation-plan.md`
-- Model: Opus
-- Runs one iteration by default (use `--max N` for more), then fills the progress file from the plan's units
-
-**Build mode** — reads `build.md` and runs a continuous implementation loop:
-- **One unit per iteration.** The loop picks the unit (an in-progress unit first, then the highest priority) and prepends a compact **loop state header** naming it, plus that unit's own entry from the plan, so Claude doesn't read the whole plan
-- Claude implements that one unit, runs its tests, commits on green, updates the progress file, and stops. A **loop contract** added to the system prompt holds it to that, and tells it to record unrelated failures instead of fixing them
-- Codebase searches go to a read-only `explorer` subagent, which keeps the main context small
-- **Auto-stops** when every unit in the progress file is marked `[x]` complete, after repeated stalls, or after 3 failed `claude` runs in a row (with backoff between them). Hitting the turn or budget cap isn't a failure: the unit stays in progress and the next iteration resumes it
-- Never pushes unless you pass `--push`
-- Logs each iteration to `log/<timestamp>-<prompt>-iteration-N.log`, and appends a summary to `log/index.jsonl`: unit, turns, duration, cost, **peak context** and compactions
-- Model: Sonnet
-
----
-
-### `ralph status`
-
-Show workflow stage and next steps for a CR.
-
-```bash
-ralph status --cr 5
-ralph status          # auto-detects the highest-numbered CR with a progress file
-```
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `--cr N` | CR number (optional — auto-detects if omitted) |
-
-Detects the current stage and prints context-aware guidance:
-
-| Stage | Condition | What it shows |
-|-------|-----------|---------------|
-| `1-write-spec` | Spec missing or stub (<150 words) | Which sections to fill in |
-| `2-plan` | Spec ready, no plan with units | Plan generation command + expected duration |
-| `3-ready-to-build` | Plan generated, no build started | Plan review checklist before starting |
-| `3-build` | Build in progress | Unit counts (complete / in-progress / not-started / blocked), progress % |
-| `4-blocked` | Has `[!]` blocked units | Common causes + resolution steps |
-| `5-done` | All units `[x]` | Final checklist (tests, git tag, AGENTS.md, PR) |
-
-Also prints file status (line counts), the next command to run, and recent git commits.
-
----
-
-### `ralph critique`
-
-Council-of-experts plan review before starting the build loop.
-
-```bash
-ralph critique --cr 5
-ralph critique        # auto-detects the latest CR with a plan
-```
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `--cr N` | CR number (optional — auto-detects if omitted) |
-
-Spawns **5 parallel Sonnet subagents**, each reading the full plan from a distinct expert perspective:
-
-| Expert | Focus |
-|--------|-------|
-| **Architect** | Unit size and decomposition, dependency graph correctness, scope clarity per unit, missing units, interface contracts |
-| **Test Engineer** | Coverage gaps, untestable acceptance criteria, missing edge cases, test dependency issues, integration gaps |
-| **Risk Analyst** | High-risk units, underspecified requirements, external dependency blockers, irreversible changes, integration risk |
-| **Domain Expert** | Tech-stack-specific checks (API design, async/concurrency, data model for backend; component decomposition, state management, TypeScript types for frontend) |
-| **Infrastructure Reviewer** | Docker healthcheck correctness, dependency chain (`condition: service_healthy`), hardcoded secrets, teardown `-v` hygiene, port/network conflicts with dev |
-
-After all 5 complete, a **Synthesizer** deduplicates and prioritizes their findings into:
-
-```
-### CRITICAL — Fix before starting build
-### IMPORTANT — Fix before starting build
-### SUGGESTED — Consider before starting
-### Plan health
-```
-
----
-
-## Typical workflow for a new CR
-
-```bash
-# 1. Scaffold the CR
-ralph add-cr --number 6 --title "My Feature" --type backend+frontend
-
-# 2. Write your spec
-vi development/cr6/spec/spec.md
-
-# 3. Check what's missing
-ralph status --cr 6
-
-# 4. Generate the implementation plan
-ralph start --mode plan --cr 6
-
-# 5. Review the plan
-cat development/cr6/plan/cr6-implementation-plan.md
-
-# 6. (Optional) Run the expert critique before building
-ralph critique --cr 6
-
-# 7. Start the implementation loop
-ralph start --mode build --cr 6
-
-# 8. Monitor progress
-ralph status --cr 6
-```
-
----
-
-## The Ralph Loop document hierarchy
-
-```
-development/
-├── templates/
-│   └── implementation-planning.md   ← canonical planning template
-├── shared/                          ← architecture docs, shared assets
-├── initial/                         ← first-run CR (created by ralph init)
-│   ├── spec/spec.md
-│   ├── plan/full-implementation-plan.md
-│   ├── progress/implementation-progress.md
-│   └── prompts/build.md, spec-planning.md
-└── crN/                             ← each change request (created by ralph add-cr)
-    ├── spec/spec.md                  ← single source of truth
-    ├── plan/crN-implementation-plan.md
-    ├── progress/implementation-progress.md
-    └── prompts/
-        ├── build.md                  ← fed to `ralph start --mode build`
-        └── spec-planning.md          ← fed to `ralph start --mode plan`
-```
-
-Two repo-root files all CRs maintain:
-- **`AGENTS.md`** — purely operational: how to run, build, test
-- **`CLAUDE.md`** — project standards (UI conventions, tech stack, etc.)
-
-Iteration logs are written to `log/` in the project root:
-```
-log/<timestamp>-<prompt-name>-iteration-N.log
-```
-
----
-
-## Build loop rules enforced by default
-
-These are injected into every `build.md` prompt:
-
-1. After completing each unit, re-read the spec and plan before picking the next one.
-2. Do not mark a unit `[x]` until every test in its Test Plan section passes unmodified.
-3. If stuck on a single blocker for more than 3 tool-call rounds, mark the unit `[!] Blocked` with a clear reason and move on.
-4. Never skip, xfail, or comment out failing tests — fix the root cause or mark the unit blocked.
-5. Schema changes must be strictly additive unless the spec explicitly requires otherwise.
-
----
-
-## Requirements
-
-- Bash 4+ (Git Bash on Windows, or WSL)
-- `claude` CLI in PATH (`npm install -g @anthropic-ai/claude-code`)
-- `git` in PATH
-- `awk`, `sed`, `date` (standard Unix tools available in Git Bash)
+|---|---|---|
+| `--max-turns N` / `--max-budget USD` | `200` / `30` (plan: `300` / `60`) | Caps per iteration |
+| `--compact-window N` | `200000` | Auto-compact window |
+| `--setting-sources LIST` | `project,local` | Claude settings to load |
+| `--no-hermetic` | — | Use your full personal Claude setup |
+| `--push` | off | Push after each iteration |
+| `--dry-run` | — | Show the next unit, prompt size and command |

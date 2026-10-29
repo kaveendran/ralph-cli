@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "required": ["unit", "status", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "unit": {"type": "string"},
+    "status": {"type": "string", "enum": ["done", "partial", "blocked"]},
+    "summary": {"type": "string"},
+    "handoff": {"type": "string"},
+    "blocker": {"type": "string"},
+    "discovered_issues": {"type": "array", "items": {"type": "string"}},
+    "learnings": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["rule"],
+        "additionalProperties": false,
+        "properties": {
+          "trigger": {"type": "string"},
+          "rule": {"type": "string"},
+          "evidence": {"type": "string"},
+          "paths": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "interfaces_changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "change": {"type": "string"},
+          "breaking": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

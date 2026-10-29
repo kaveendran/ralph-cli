@@ -1,0 +1,31 @@
+# ralph harness settings for this project (docs/meta-harness-plan.md in ralph-cli).
+
+[runner]
+model_build = "sonnet"
+model_plan = "opus"
+max_turns = 200            # per iteration
+max_budget_usd = 30        # per iteration (Claude Code's own estimate; leave headroom)
+timeout_minutes = 90       # per iteration
+compact_window = 200000    # auto-compact here instead of near the 1M-token limit
+setting_sources = "project,local"
+# claude_version = "{{CLAUDE_VERSION}}"   # pin Claude Code; the loop stops if it changes
+
+[verify]
+review = "p0-and-large"    # off | p0-and-large | all: which units get the read-only review
+max_attempts = 3
+frozen = []                # globs the agent must never change, e.g. ["migrations/versions/**"]
+health = ""                # a quick command before each iteration
+done = ""                  # must pass before a CR counts as complete
+paid_gates = {{PAID_GATES}}
+
+# The commands the harness runs itself to decide whether a unit is done.
+[verify.gates]
+{{GATES}}
+
+# Which gates run for which unit type ("default" covers the rest).
+[verify.by_type]
+{{BY_TYPE}}
+
+[loop]
+max_stalls = 3             # iterations in a row that change nothing
+tag_format = "{cr}-done"   # local tag when a CR converges; "" turns it off

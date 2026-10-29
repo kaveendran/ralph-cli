@@ -9,6 +9,7 @@ RALPH_CLI="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RALPH="$RALPH_CLI/ralph.sh"
 TEST_DIR="/tmp/ralph-e2e-$$"
 export RALPH_NO_TUI=1   # force plain fallback — gum reads from TTY, not stdin
+export RALPH_LEGACY=1   # this suite covers the original bash commands; the harness has tests/
 
 PASS=0; FAIL=0; SKIP=0
 

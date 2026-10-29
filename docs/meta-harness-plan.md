@@ -57,7 +57,7 @@ Every feature, what it does, how you use it, and which delivery phase ([§18](#1
 | | Steering | Adds your note, or a must-pass check, to the next unit pack without stopping the loop (from ralph-harness). | `ralph steer "…"` | P1 |
 | | Pause to edit | Finishes the current iteration, waits while you edit the plan, then continues (from ralphex). | `ralph pause`, `ralph resume` | P1 |
 | **Work graph** | Plan compiler | Turns the plan into a dependency graph of units (dependencies, priority, spec refs, key files). | automatic after planning | P1 |
-| | Unit size check | Rejects units that are too big (more than ~8 key files or 3 spec sections) with a suggested split, and flags Large units. | automatic, `ralph graph compile` | P1 |
+| | Unit size check | Rejects units with more than 8 key files (suggesting a split), and flags Large units and units that cite many spec sections. | automatic, `ralph graph compile` | P1 |
 | | Ready list | Lists the units that can start right now (from Beads). | `ralph ready` | P1 |
 | | Discovered work | Issues found during a unit become new linked units. Hash-suffixed IDs mean units added by different developers never clash (from Beads). | automatic | P1 |
 | | Complexity analysis | Scores each unit's complexity and proposes splits for the hard ones (from Taskmaster). | `ralph graph compile --analyze` | P2 |
@@ -254,7 +254,8 @@ flowchart LR
 - The **plan markdown stays the human-authored source** of unit definitions, and the plan prompt produces it.
 - `ralph graph compile` parses it with tolerant parsers that handle bold IDs, multi-line `Depends On`, cross-CR references, `§N.N` spec references and an Implementation Order table. The result is a graph.
 - **Unit size check (a hard rule).**
-  - When the plan is compiled, a unit with more than ~8 `key_files` or more than 3 cited spec sections is rejected with a suggested split. A unit sized `Large` is flagged.
+  - When the plan is compiled, a unit with more than 8 `key_files` is rejected with a suggested split. A unit sized `Large`, or citing more than 6 spec sections, is flagged.
+  - Spec citations aren't a reliable size signal on their own: real plans cite 11–14 sections per unit as references, not as scope. That's why they only flag (changed during P1).
   - You can override a single unit with `--allow-large U012`.
   - At run time, two compactions or cap hits on one unit trigger the same split proposal ([§5](#5-the-loop-kernel-phase-by-phase)).
   - Small units are what keep the context small; the harness can't rescue an oversized one.
@@ -824,6 +825,22 @@ log/                     # ignored: iterations.jsonl + per-iteration run directo
 - Little change → re-diagnose before building. Unit difficulty or test time may be what dominates.
 
 These changes stay useful until the new harness replaces the bash loop.
+
+### Progress (2026-10-29)
+| Phase | State | Evidence |
+|---|---|---|
+| P-1 | **Done** on branch `meta-harness`. Waits for one real unit (your go-ahead) to measure against the targets. | Dry run on the real cr2: a ~3.3k-token prompt vs ~24k tokens of files the old prompt pointed to. A real toy run: one unit done, the next left alone, peak context 34k. |
+| P0 | **Done** except the GitHub refs spike (needs a push). | §20 |
+| P1 | **Core done.** `ralph init`, `add-cr`, `start` (build, plan, `--task`, `--dry-run`), `status`, `graph`, `ready`, `unblock`, `set`, `steer`, `pause`, `resume`, `watch`, `migrate` and `doctor` run on the Python harness. `critique`, `refine-plan`, `retro` and `deploy` still run the original bash scripts. | 88 Python tests and the 148 original bash tests pass. A real run of the new harness on a toy project: two units in dependency order, each through gates and review, committed; convergence check passed; tagged. A migrated copy of the real cr2 dry-runs at ~3.6k tokens. |
+
+**What building P1 taught us** (each is now handled, with a test):
+- **Unprefixed cross-CR dependencies.** `[CR1 U017, U018, …]` lists several cr1 units, but only the first has the CR prefix. Unknown IDs are now informational instead of blocking forever.
+- **New projects have no tests.** `pytest` and `unittest` exit 5 when they collect nothing, which would have failed the baseline of every new project. Exit 5 is accepted at baseline only.
+- **The agent must see the gate commands.** It wrote pytest-style tests for a `unittest` gate. The pack now lists the exact checks the harness will run.
+- **Build artifacts.** Running tests creates `__pycache__/`, which landed in a unit's diff in a repo without a `.gitignore` rule for it. Untracked artifacts are never attributed to a unit, and paths that become ignored mid-unit are skipped.
+- **Work across attempts.** Attempt 2 sees attempt 1's files as already dirty. Each unit now tracks its own work-in-progress, so the final commit includes every attempt and your own uncommitted files are never mistaken for it.
+- **Never `git commit` without paths.** That would commit everything you had staged. The harness commits only explicit paths and refuses an empty list.
+- **Case-insensitive filesystems.** On macOS a template named `claude.md` is read as a `CLAUDE.md` memory file. Templates avoid that name.
 
 ---
 

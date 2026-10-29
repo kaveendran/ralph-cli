@@ -2,7 +2,11 @@
 # ralph — Ralph Loop CLI
 # Usage: ralph <command> [options]
 #
-# Commands:
+# The Python harness (ralph/) handles every command. The original bash
+# commands below run when RALPH_LEGACY=1 is set; the harness sets it for
+# `ralph legacy <command>` and for the workflows not ported yet.
+#
+# Original bash commands:
 #   init          Scaffold the Ralph pattern into a project
 #   add-cr        Scaffold a new change request
 #   start         Run the Ralph Loop (plan or build mode)
@@ -23,6 +27,18 @@ while [ -L "$RALPH_SOURCE" ]; do
   [ "${RALPH_SOURCE#/}" = "$RALPH_SOURCE" ] && RALPH_SOURCE="$RALPH_LINK_DIR/$RALPH_SOURCE"
 done
 RALPH_DIR="$(cd -P "$(dirname "$RALPH_SOURCE")" && pwd)"
+
+if [ "${RALPH_LEGACY:-}" != "1" ]; then
+  PYTHON="$(command -v python3 || true)"
+  if [ -z "$PYTHON" ] || ! "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    echo "ralph needs Python 3.11 or newer as python3 on your PATH." >&2
+    echo "The original bash commands still run with: RALPH_LEGACY=1 ralph <command>" >&2
+    exit 1
+  fi
+  # -P: don't put the current directory on sys.path, so a project's own
+  # modules can never shadow the harness's.
+  PYTHONPATH="$RALPH_DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -P -m ralph "$@"
+fi
 
 usage() {
   echo ""

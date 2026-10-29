@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["converged", "gaps"],
+  "additionalProperties": false,
+  "properties": {
+    "converged": {"type": "boolean"},
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {"type": "string"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  }
+}
