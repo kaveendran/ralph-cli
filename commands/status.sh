@@ -105,7 +105,7 @@ if ! $spec_exists || ! $spec_has_content; then
   STAGE="1-write-spec"
 elif ! $plan_exists || ! $plan_has_units; then
   STAGE="2-plan"
-elif $any_complete || $inprogress_count -gt 0 2>/dev/null; then
+elif $any_complete || [[ "${inprogress_count:-0}" -gt 0 ]]; then
   if $all_complete; then
     STAGE="5-done"
   elif $has_blocked; then

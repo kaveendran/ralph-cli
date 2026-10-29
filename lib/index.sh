@@ -3,14 +3,17 @@
 # One JSON line per iteration. Read by `ralph watch`, `ralph retro`, and stall
 # detection in `ralph start`.
 
+_INDEX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # index_count_units <progress_file>  →  echoes "complete in_progress not_started blocked total"
+# Counts unit lines only ("- [x] U012 …"), so non-unit checklist items don't skew it.
 index_count_units() {
   local f="$1" c=0 ip=0 ns=0 bl=0
   if [[ -f "$f" ]]; then
-    c=$(grep  -c '^\- \[x\]'  "$f" 2>/dev/null || true)
-    ip=$(grep -c '^\- \[~\]'  "$f" 2>/dev/null || true)
-    ns=$(grep -c '^\- \[ \]'  "$f" 2>/dev/null || true)
-    bl=$(grep -c '^\- \[!\]'  "$f" 2>/dev/null || true)
+    c=$(grep  -cE '^- \[x\] (\*\*)?U[0-9]+' "$f" 2>/dev/null || true)
+    ip=$(grep -cE '^- \[~\] (\*\*)?U[0-9]+' "$f" 2>/dev/null || true)
+    ns=$(grep -cE '^- \[ \] (\*\*)?U[0-9]+' "$f" 2>/dev/null || true)
+    bl=$(grep -cE '^- \[!\] (\*\*)?U[0-9]+' "$f" 2>/dev/null || true)
   fi
   echo "${c:-0} ${ip:-0} ${ns:-0} ${bl:-0} $(( ${c:-0} + ${ip:-0} + ${ns:-0} + ${bl:-0} ))"
 }
@@ -37,11 +40,24 @@ json_escape() {
   printf '%s' "$s"
 }
 
-# index_record_after <iter> <mode> <cr> <model> <prompt> <log_file> <progress_file> <before_snap>
+# agent_stats <log_file> [field]  →  the iteration's agent stats as JSON (or one field)
+# Turns, cost, duration, peak context and compactions come from the stream-json
+# log. Prints "null" (or an empty field) when python3 is unavailable.
+agent_stats() {
+  local log_file="$1" field="${2:-}"
+  if command -v python3 >/dev/null 2>&1 && [[ -f "$log_file" ]] \
+     && python3 -I "$_INDEX_LIB_DIR/stream_stats.py" "$log_file" ${field:+"$field"} 2>/dev/null; then
+    return 0
+  fi
+  [[ -z "$field" ]] && echo "null"
+  return 0   # never fail: callers use this inside $(...) under set -e
+}
+
+# index_record_after <iter> <mode> <cr> <model> <prompt> <log_file> <progress_file> <before_snap> [unit]
 # Appends one JSON line to log/index.jsonl.
 index_record_after() {
   local iter="$1" mode="$2" cr="$3" model="$4" prompt_file="$5"
-  local log_file="$6" progress_file="$7" before="$8"
+  local log_file="$6" progress_file="$7" before="$8" unit="${9:-}"
 
   local before_c before_ip before_ns before_bl before_t before_head before_ts
   IFS='|' read -r before_c before_ip before_ns before_bl before_t before_head before_ts <<<"$before"
@@ -86,11 +102,15 @@ index_record_after() {
   local index_file
   index_file="$(dirname "$log_file")/index.jsonl"
 
-  printf '{"iter":%d,"ts":"%s","mode":"%s","cr":"%s","model":"%s","prompt":"%s","log":"%s","units":{"complete":%d,"in_progress":%d,"not_started":%d,"blocked":%d,"total":%d},"delta":{"complete":%d,"files_changed":%s,"insertions":%s,"deletions":%s},"tests_seen":%s,"head_before":"%s","head_after":"%s","stalled":%s,"regressed":%s}\n' \
+  local agent
+  agent=$(agent_stats "$log_file")
+
+  printf '{"iter":%d,"ts":"%s","mode":"%s","cr":"%s","unit":"%s","model":"%s","prompt":"%s","log":"%s","units":{"complete":%d,"in_progress":%d,"not_started":%d,"blocked":%d,"total":%d},"delta":{"complete":%d,"files_changed":%s,"insertions":%s,"deletions":%s},"tests_seen":%s,"head_before":"%s","head_after":"%s","stalled":%s,"regressed":%s,"agent":%s}\n' \
     "$iter" \
     "$(json_escape "$ts_after")" \
     "$(json_escape "$mode")" \
     "$(json_escape "$cr")" \
+    "$(json_escape "$unit")" \
     "$(json_escape "$model")" \
     "$(json_escape "$(basename "$prompt_file")")" \
     "$(json_escape "$(basename "$log_file")")" \
@@ -100,15 +120,17 @@ index_record_after() {
     "$(json_escape "$before_head")" \
     "$(json_escape "$head_after")" \
     "$stalled" "$regressed" \
+    "${agent:-null}" \
     >> "$index_file"
 }
 
-# index_recent_stalls <count>  →  echoes count of consecutive stalled iterations from tail
+# index_recent_stalls <count>  →  echoes how many of the last <count> iterations stalled
+# (all of them stalled when the result equals <count>)
 index_recent_stalls() {
   local n="${1:-3}"
   local index_file="log/index.jsonl"
   [[ ! -f "$index_file" ]] && { echo 0; return; }
-  # Count trailing consecutive `"stalled":true` lines
-  tail -n "$n" "$index_file" 2>/dev/null \
-    | grep -c '"stalled":true' || echo 0
+  local count
+  count=$(tail -n "$n" "$index_file" 2>/dev/null | grep -c '"stalled":true' || true)
+  echo "${count:-0}"
 }

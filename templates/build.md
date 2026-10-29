@@ -14,15 +14,15 @@ Read before each unit; spec wins on behavior conflicts:
 
 ## 1. Task
 
-Implement {{CR_NAME}} unit-by-unit per plan §"Implementation Order". Each unit's Goal / Requirements / Acceptance Criteria / Test Plan / DoD are binding.
+Implement one unit of {{CR_NAME}} per iteration, following plan §"Implementation Order". Each unit's Goal / Requirements / Acceptance Criteria / Test Plan / DoD are binding.
 
-- Pick the highest-priority unit whose deps are met and is not yet complete.
+- Work on the unit named in the Loop State block. Its full plan entry is included there, so you don't need to read the whole plan.
 - Before writing any file: (1) read AGENTS.md to confirm run/build/test commands, (2) search for at least 2 existing files that use the pattern you are about to write, (3) match their structure exactly — do not invent new patterns.
 - Implement fully — no placeholders, no TODOs, no stubs.
 - Write the unit's tests in the same change. Tests are part of the deliverable.
-- Run the relevant suite (§3); fix every failure, including unrelated pre-existing ones you uncover.
+- Run the relevant suite (§4) and fix the failures your unit caused. Record unrelated failures in the progress notes as "Discovered:" items instead of fixing them.
 
-You may use up to 200 parallel Sonnet subagents for searches and reads, and up to 1 subagent for build/test execution.
+Delegate searches and code reading to the `explorer` subagent (several in parallel when useful), and use only 1 subagent for build/test execution.
 
 ## 2. Critical rules — read before every unit
 
@@ -43,7 +43,7 @@ Update on start, completion, or block. Keep a PR-rollup summary at the top.
 
 {{TEST_COMMANDS}}
 
-**Never** skip, xfail, or disable a test to make it pass. If you uncover an unrelated regression, fix the root cause in the same increment.
+**Never** skip, xfail, or disable a test to make it pass. If you uncover an unrelated regression, record it in the progress notes as a "Discovered:" item; don't fix it in this unit.
 
 ## 5. Commit cadence
 

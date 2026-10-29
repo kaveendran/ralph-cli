@@ -39,7 +39,7 @@ check_no_placeholders() {
 
 check_contains() {
   local desc="$1" pattern="$2" text="$3"
-  if echo "$text" | grep -qE "$pattern"; then
+  if echo "$text" | grep -qE -e "$pattern"; then
     pass "$desc"
   else
     fail "$desc — expected /$pattern/ in: $(echo "$text" | head -3)"
@@ -48,7 +48,7 @@ check_contains() {
 
 check_not_contains() {
   local desc="$1" pattern="$2" text="$3"
-  if echo "$text" | grep -qE "$pattern"; then
+  if echo "$text" | grep -qE -e "$pattern"; then
     fail "$desc — did NOT expect /$pattern/"
   else
     pass "$desc"
@@ -293,6 +293,38 @@ all_units_done "/tmp/no-such-file-$$" \
   && fail "all_units_done: should return false for missing file" \
   || pass "all_units_done: correctly false for missing file"
 
+# populate: the progress template's placeholder line is not real progress
+TEMPLATE_PROGRESS="$TEST_DIR/template-progress.md"
+printf -- '# CR\n\n- [ ] U001 (fill in after running plan mode)\n' > "$TEMPLATE_PROGRESS"
+populate_progress_from_plan "$FAKE_PLAN" "$TEMPLATE_PROGRESS"
+check_contains "populate: replaces the template placeholder line" "U003 Implement CRUD endpoints" "$(cat "$TEMPLATE_PROGRESS")"
+
+# populate: priority and size tags come from the unit's own fields
+TAGGED_PLAN="$TEST_DIR/tagged-plan.md"
+printf -- '## Unit: Alpha (ID: U001)\n**Priority:** P1-High\n**Size Estimate:** Medium\n\n## Unit: Beta (ID: U002)\n**Priority:** P0-Critical\n' > "$TAGGED_PLAN"
+printf '# stub\n' > "$STUB_PROGRESS"
+populate_progress_from_plan "$TAGGED_PLAN" "$STUB_PROGRESS"
+check_contains "populate: priority|size tag" "U001 \[P1[|]M\] Alpha" "$(cat "$STUB_PROGRESS")"
+check_contains "populate: priority-only tag" "U002 \[P0\] Beta"    "$(cat "$STUB_PROGRESS")"
+
+# select_next_unit: in-progress first, then priority, bold IDs, blocked skipped
+SEL="$TEST_DIR/select-progress.md"
+printf -- '- [x] U001 Done\n- [!] U002 Blocked\n- [ ] U003 [P2] Later\n- [ ] **U004 [P0] Urgent**\n' > "$SEL"
+check_contains "select: highest priority, bold ID" "^U004$" "$(select_next_unit "$SEL")"
+printf -- '- [ ] U005 [P0] Urgent\n- [~] U006 Half done\n' > "$SEL"
+check_contains "select: resumes the in-progress unit first" "^U006$" "$(select_next_unit "$SEL")"
+printf -- '  - [ ] U0nn sample line in a comment\n- [x] U001 Done\n' > "$SEL"
+check_contains "select: nothing left → empty" "^$" "$(select_next_unit "$SEL")"
+
+# extract_unit_section: only the selected unit's entry
+SECTION_PLAN="$TEST_DIR/section-plan.md"
+printf -- '## Unit: One (ID: U001)\nfirst body\n\n## Unit: Two (ID: U002)\nsecond body\n### Test Plan\nsecond tests\n\n## Unit: Three (ID: U003)\nthird body\n' > "$SECTION_PLAN"
+SECTION=$(extract_unit_section "$SECTION_PLAN" U002)
+check_contains     "extract: has its own body"      "second body"  "$SECTION"
+check_contains     "extract: keeps its subsections" "second tests" "$SECTION"
+check_not_contains "extract: excludes later units"  "third body"   "$SECTION"
+check_not_contains "extract: excludes earlier units" "first body"  "$SECTION"
+
 # ──────────────────────────────────────────────────────────────────────────────
 section "11. lib/tui.sh — fallback mode (RALPH_NO_TUI=1)"
 # ──────────────────────────────────────────────────────────────────────────────
@@ -341,7 +373,8 @@ check_contains "build.md: spec path correct"       "development/cr1/spec/spec.md
 check_contains "build.md: plan path correct"       "development/cr1/plan"         "$(cat "$BUILD")"
 check_contains "build.md: progress path correct"   "development/cr1/progress"     "$(cat "$BUILD")"
 check_contains "build.md: AGENTS.md referenced"    "AGENTS.md"    "$(cat "$BUILD")"
-check_contains "build.md: critical rules present"  "re-read the spec" "$(cat "$BUILD")"
+check_contains "build.md: critical rules present"  "exactly one unit" "$(cat "$BUILD")"
+check_not_contains "build.md: no 'fix unrelated failures' instruction" "including unrelated pre-existing" "$(cat "$BUILD")"
 check_contains "build.md: completion gate present" "Completion gate|sign-off"    "$(cat "$BUILD")"
 check_contains "build.md: loop state note present" "Loop state"   "$(cat "$BUILD")"
 
@@ -383,6 +416,110 @@ for TYPE in api database infrastructure refactor; do
   check_no_placeholders "development/cr${N}/prompts/build.md"
   N=$((N+1))
 done
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+section "17. ralph start — bounded, hermetic, one-unit iterations (fake claude)"
+# ──────────────────────────────────────────────────────────────────────────────
+# A fake `claude` records its arguments, CLAUDE_CODE_* environment and stdin,
+# then prints scripted stream-json. FAKE_CLAUDE_MODE picks the outcome.
+FAKEBIN="$TEST_DIR/fakebin"
+CALLS="$TEST_DIR/fake-calls"
+mkdir -p "$FAKEBIN" "$CALLS"
+cat > "$FAKEBIN/claude" << 'EOF'
+#!/usr/bin/env bash
+out="${FAKE_CLAUDE_DIR:?}"
+n=$(( $(cat "$out/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$out/count"
+printf '%s\n' "$@" > "$out/args.$n"
+env | grep -E '^CLAUDE_CODE_' | sort > "$out/env.$n"
+cat > "$out/stdin.$n"
+case "${FAKE_CLAUDE_MODE:-ok}" in
+  ok)
+    echo '{"type":"system","subtype":"init","session_id":"s1"}'
+    echo '{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"cache_read_input_tokens":40000,"cache_creation_input_tokens":2000},"content":[{"type":"tool_use","name":"Agent","input":{}}]}}'
+    echo '{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":5,"cache_read_input_tokens":90000,"cache_creation_input_tokens":1000},"content":[{"type":"tool_use","name":"Bash","input":{}}]}}'
+    echo '{"type":"system","subtype":"compact_boundary"}'
+    echo '{"type":"result","subtype":"success","is_error":false,"num_turns":7,"duration_ms":120000,"duration_api_ms":90000,"total_cost_usd":1.25,"session_id":"s1"}'
+    exit 0 ;;
+  cap)
+    echo '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":200,"duration_ms":1000,"total_cost_usd":3.5}'
+    exit 1 ;;
+  fail)
+    echo 'API Error: 529 overloaded'
+    exit 1 ;;
+esac
+EOF
+chmod +x "$FAKEBIN/claude"
+fake_calls() { cat "$CALLS/count" 2>/dev/null || echo 0; }
+
+LOOP_DIR="$TEST_DIR/loop-project"
+mkdir -p "$LOOP_DIR/development/cr1/"{prompts,plan,progress,spec}
+cd "$LOOP_DIR"
+git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+echo "BUILD PROMPT BODY" > development/cr1/prompts/build.md
+echo "PLAN PROMPT BODY"  > development/cr1/prompts/spec-planning.md
+echo "spec text"         > development/cr1/spec/spec.md
+printf -- '## Unit: First (ID: U001)\nfirst body\n\n## Unit: Second (ID: U002)\nsecond body\n\n## Unit: Third (ID: U003)\nthird body\n' \
+  > development/cr1/plan/cr1-implementation-plan.md
+printf -- '- [x] U001 First\n- [ ] U002 Second\n- [ ] U003 Third\n' > development/cr1/progress/implementation-progress.md
+echo '{"mcpServers":{"personal":{"url":"http://localhost:1/mcp"}}}' > .mcp.json   # untracked, like an editor extension's
+
+run_start() { PATH="$FAKEBIN:$PATH" FAKE_CLAUDE_DIR="$CALLS" RALPH_RETRY_DELAY=0 bash "$RALPH" start "$@" 2>&1; }
+
+OUT=$(run_start --cr 1 --max 1); STATUS=$?
+N=$(fake_calls)
+ARGS=$(tr '\n' ' ' < "$CALLS/args.$N")
+check_contains "build: exits cleanly"                    "^0$" "$STATUS"
+check_contains "build: turn and budget caps"             "--max-turns 200 --max-budget-usd 30" "$ARGS"
+check_contains "build: project-only MCP servers"         "--strict-mcp-config --mcp-config" "$ARGS"
+check_not_contains "build: untracked .mcp.json not used"  "--mcp-config \.mcp\.json" "$ARGS"
+check_contains "build: project and local settings only"  "--setting-sources project,local" "$ARGS"
+check_contains "build: explorer subagent"                "--agents .*explorer.json" "$ARGS"
+check_contains "build: one-unit contract"                "--append-system-prompt" "$ARGS"
+check_contains "build: compaction window 200k"           "CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000" "$(cat "$CALLS/env.$N")"
+check_contains "build: auto memory off"                  "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" "$(cat "$CALLS/env.$N")"
+PROMPT=$(cat "$CALLS/stdin.$N")
+check_contains     "build: names the iteration's unit"   "This iteration's unit: U002" "$PROMPT"
+check_contains     "build: includes that unit's entry"   "second body" "$PROMPT"
+check_not_contains "build: leaves out other units"       "third body"  "$PROMPT"
+check_contains     "build: keeps the build prompt"       "BUILD PROMPT BODY" "$PROMPT"
+check_contains     "build: next unit shown without its checkbox" "later iteration, not now\): U003 Third" "$PROMPT"
+INDEX=$(tail -n 1 log/index.jsonl 2>/dev/null)
+check_contains "index: records the unit"                 '"unit":"U002"' "$INDEX"
+check_contains "index: records peak context"             '"peak_context":91005' "$INDEX"
+check_contains "index: records compactions"              '"compactions":1' "$INDEX"
+check_contains "index: records subagent calls"           '"subagent_calls":1' "$INDEX"
+check_contains "build: prints the iteration summary"     "U002 · 7 turns · 2 min" "$OUT"
+check_not_contains "build: no push without --push"       "Creating remote|git push" "$OUT"
+
+BEFORE=$(fake_calls)
+OUT=$(run_start --cr 1 --dry-run)
+check_contains "dry run: never calls claude"             "^${BEFORE}$" "$(fake_calls)"
+check_contains "dry run: shows the unit and size"        "U002" "$OUT"
+check_contains "dry run: compares with the old prompt"   "tokens" "$OUT"
+
+BEFORE=$(fake_calls)
+OUT=$(run_start --mode plan --cr 1)
+check_contains "plan: one iteration by default"          "^$((BEFORE + 1))$" "$(fake_calls)"
+check_contains "plan: larger caps for one long session"  "--max-turns 300 --max-budget-usd 60" "$(tr '\n' ' ' < "$CALLS/args.$(fake_calls)")"
+
+BEFORE=$(fake_calls)
+OUT=$(FAKE_CLAUDE_MODE=cap run_start --cr 1 --max 2); STATUS=$?
+check_contains "cap hit: loop continues"                 "^$((BEFORE + 2))$" "$(fake_calls)"
+check_contains "cap hit: explained, not a failure"       "hit its cap" "$OUT"
+check_contains "cap hit: exits cleanly"                  "^0$" "$STATUS"
+
+BEFORE=$(fake_calls)
+OUT=$(FAKE_CLAUDE_MODE=fail run_start --cr 1 --max 5)
+check_contains "failures: stops after 3 in a row"        "^$((BEFORE + 3))$" "$(fake_calls)"
+check_contains "failures: says why it stopped"           "failed 3 times in a row" "$OUT"
+
+OUT=$(run_start --cr || true)
+check_contains "args: missing value is a clear error"    "needs a value" "$OUT"
+OUT=$(run_start --cr 1 --max abc || true)
+check_contains "args: non-numeric --max is a clear error" "whole number" "$OUT"
+
+cd "$TEST_DIR"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

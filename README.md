@@ -124,8 +124,21 @@ ralph start --mode build --prompt development/cr5/prompts/build.md
 | `--mode` | `build` | `plan` or `build` |
 | `--cr N` | — | CR number (auto-resolves prompt path) |
 | `--prompt PATH` | — | Explicit prompt file (overrides `--cr`) |
-| `--max N` | `0` (unlimited) | Stop after N iterations |
+| `--max N` | `1` (plan) / `0` = unlimited (build) | Stop after N iterations |
 | `--model` | `opus` (plan) / `sonnet` (build) | Claude model |
+| `--max-turns N` | `300` (plan) / `200` (build) | Turn cap per iteration |
+| `--max-budget USD` | `60` (plan) / `30` (build) | Spend cap per iteration (Claude's own estimate) |
+| `--compact-window N` | `200000` | Auto-compact when context reaches N tokens (the default on 1M-context models is ~967K, which never triggers) |
+| `--setting-sources LIST` | `project,local` | Which Claude settings to load; leaves out your personal plugins and hooks |
+| `--no-hermetic` | — | Use your full personal Claude setup (all MCP servers, plugins, auto memory) |
+| `--push` | off | Push the branch after each iteration. Without it, the loop never pushes |
+| `--dry-run` | — | Show the next iteration's unit, prompt size and command, without calling Claude or writing anything |
+| `--max-stalls N` | `3` | Stop after N iterations in a row with no progress (`0` disables) |
+| `--no-stop-regress` | — | Don't stop when the completed-unit count goes down |
+
+The `RALPH_MAX_TURNS`, `RALPH_MAX_BUDGET`, `RALPH_COMPACT_WINDOW` and `RALPH_SETTING_SOURCES` environment variables set the same defaults.
+
+**Hermetic runs (default).** Each iteration loads only the project's MCP servers (`.ralph/mcp.json`, or a `.mcp.json` committed to the repo), only project and local settings, and no auto memory. Your personal MCP servers, claude.ai connectors and plugins stay out of loop runs.
 
 If neither `--cr` nor `--prompt` is given, `ralph start` reads the prompt path from `loop_plan.sh` in the project root, or falls back to `development/initial/prompts/`.
 
@@ -134,14 +147,16 @@ If neither `--cr` nor `--prompt` is given, `ralph start` reads the prompt path f
 - 5 synthesis agents produce: gap analysis, unit decomposition (P0–P3 priority + size + dependency graph), test strategy, risk analysis, and traceability matrix
 - Writes the finished plan to `development/crN/plan/crN-implementation-plan.md`
 - Model: Opus
+- Runs one iteration by default (use `--max N` for more), then fills the progress file from the plan's units
 
 **Build mode** — reads `build.md` and runs a continuous implementation loop:
-- Each iteration prepends a compact **loop state header** (progress %, in-progress units, next unit, blocked units, last commit) generated fresh from the progress file
-- Claude picks the highest-priority unblocked unit, implements it fully, runs the test suite, commits on green, and updates the progress file
-- **Auto-stops** when every unit in the progress file is marked `[x]` complete
-- Git-pushes after every iteration (creates remote tracking branch if needed)
-- Logs each iteration to `log/<timestamp>-<prompt>-iteration-N.log`
-- Model: Sonnet (up to 200 parallel subagents per iteration)
+- **One unit per iteration.** The loop picks the unit (an in-progress unit first, then the highest priority) and prepends a compact **loop state header** naming it, plus that unit's own entry from the plan, so Claude doesn't read the whole plan
+- Claude implements that one unit, runs its tests, commits on green, updates the progress file, and stops. A **loop contract** added to the system prompt holds it to that, and tells it to record unrelated failures instead of fixing them
+- Codebase searches go to a read-only `explorer` subagent, which keeps the main context small
+- **Auto-stops** when every unit in the progress file is marked `[x]` complete, after repeated stalls, or after 3 failed `claude` runs in a row (with backoff between them). Hitting the turn or budget cap isn't a failure: the unit stays in progress and the next iteration resumes it
+- Never pushes unless you pass `--push`
+- Logs each iteration to `log/<timestamp>-<prompt>-iteration-N.log`, and appends a summary to `log/index.jsonl`: unit, turns, duration, cost, **peak context** and compactions
+- Model: Sonnet
 
 ---
 

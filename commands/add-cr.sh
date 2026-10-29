@@ -121,7 +121,13 @@ build_test_commands() {
 # ── Tech constraints by type ──────────────────────────────────────────────────
 build_tech_constraints() {
   local t="$1"
+  # backend+frontend must come before backend*, which would otherwise match it.
   case "$t" in
+    backend+frontend)
+      echo "- Backend: Python 3.11+, FastAPI, SQLAlchemy, Pydantic, pytest.
+- Frontend: TypeScript 5+, React 19, Vite, Tailwind CSS, Vitest.
+- No new dependencies without user confirmation."
+      ;;
     backend*)
       echo "- Python 3.11+, FastAPI, SQLAlchemy, Pydantic, pytest + pytest-asyncio.
 - No new dependencies without user confirmation.
@@ -131,11 +137,6 @@ build_tech_constraints() {
       echo "- TypeScript 5+, React 19, Vite, Tailwind CSS, Vitest + React Testing Library.
 - No new dependencies without user confirmation.
 - All colors via CSS variables / Tailwind utilities — no raw hex."
-      ;;
-    backend+frontend)
-      echo "- Backend: Python 3.11+, FastAPI, SQLAlchemy, Pydantic, pytest.
-- Frontend: TypeScript 5+, React 19, Vite, Tailwind CSS, Vitest.
-- No new dependencies without user confirmation."
       ;;
     *)
       echo "- (list your tech stack constraints here)"
@@ -231,8 +232,11 @@ done
 if [[ -f "loop_plan.sh" ]]; then
   echo ""
   if tui_confirm "Update loop_plan.sh to point to CR${CR_NUMBER} prompts?"; then
-    sed -i "s|BUILD_PROMPT_FILE=.*|BUILD_PROMPT_FILE=\"${BUILD_PROMPT}\"|" loop_plan.sh
-    sed -i "s|PLAN_PROMPT_FILE=.*|PLAN_PROMPT_FILE=\"${PLAN_PROMPT}\"|" loop_plan.sh
+    # -i.bak (suffix attached) works with both GNU and BSD/macOS sed.
+    sed -i.bak \
+      -e "s|^BUILD_PROMPT_FILE=.*|BUILD_PROMPT_FILE=\"${BUILD_PROMPT}\"|" \
+      -e "s|^PLAN_PROMPT_FILE=.*|PLAN_PROMPT_FILE=\"${PLAN_PROMPT}\"|" \
+      loop_plan.sh && rm -f loop_plan.sh.bak
     tui_log_ok "Updated loop_plan.sh → CR${CR_NUMBER} prompts"
   fi
 fi

@@ -9,7 +9,7 @@
 
 _rules_base() {
   cat <<'EOF'
-- After completing each unit, re-read the spec and plan before picking the next one.
+- Implement exactly one unit per iteration, then stop; the next iteration picks up the next unit.
 - Do not mark a unit [x] until every test in its Test Plan section passes unmodified.
 - If stuck on a single blocker for more than 3 tool-call rounds, mark the unit [!] Blocked with a clear reason and move on.
 - Never skip, xfail, or comment out failing tests — fix the root cause or mark the unit blocked.
