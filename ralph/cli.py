@@ -4,11 +4,11 @@ import argparse
 import sys
 
 from ralph import __version__, ui
-from ralph.commands import (control, doctor, graph, memory, migrate, scaffold, skills, start, status, team, units,
-                            watch, workflows)
+from ralph.commands import (claims, control, doctor, graph, memory, migrate, scaffold, skills, start, status, team,
+                            units, watch, workflows)
 from ralph.errors import RalphError
 
-COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, workflows, team, memory, skills,
+COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, workflows, team, claims, memory, skills,
                    migrate, doctor)
 
 EPILOG = """\
@@ -28,6 +28,7 @@ with a team (manual; the loop itself never fetches or pushes):
   ralph sync                         fetch the shared branch, see what affects your units, rebase if you agree
   ralph sync push                    review what would be published, then push it
   ralph changes / team / impact ID   what changed and who it affects, as of your last sync
+  ralph claim --next 3 / lock PATH   reserve units or files so teammates don't collide (release / unlock)
 
 a project from the previous bash loop: ralph migrate --cr N --dry-run, then ralph migrate --cr N
 """

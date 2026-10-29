@@ -22,6 +22,7 @@ from ralph.model.unit import Status, Unit
 from ralph.paths import ProjectPaths
 from ralph.team import interfaces
 from ralph.team.impact import ImpactReport, Impact, classify, merge_conflicts, symbol, team_view, touches
+from ralph.runner.hooks import decide
 from ralph.team.ledger import LedgerEntry, from_others, new_entry, read_local, read_pending, write_entry
 from ralph.vcs.git import Git
 from tests import helpers
@@ -181,8 +182,8 @@ def ack_step(unit: str, files: dict[str, str], acknowledged: list[str]):
     return step
 
 
-class TwoClones(TempDirTestCase):
-    """The P3a exit check: two clones of one remote."""
+class TwoClonesCase(TempDirTestCase):
+    """Two clones of one bare remote: A (the original) and B (a teammate)."""
 
     def setUp(self):
         super().setUp()
@@ -225,9 +226,9 @@ class TwoClones(TempDirTestCase):
         config.loop.retry_delay_seconds = 0
         return config
 
-    def kernel(self, root, *steps, **options):
+    def kernel(self, root, *steps, config=None, **options):
         runner = ScriptedRunner(*steps)
-        kernel = Kernel(ProjectPaths(root), self.config(), runner,
+        kernel = Kernel(ProjectPaths(root), config or self.config(), runner,
                         StartOptions(cr="cr1", skip_baseline=True, allow_main=True, **options))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             kernel.run()
@@ -243,6 +244,11 @@ class TwoClones(TempDirTestCase):
 
     def remote_head(self) -> str:
         return git(self.origin, "rev-parse", "main")
+
+
+
+class TwoClones(TwoClonesCase):
+    """The P3a exit check."""
 
     def test_sync_shows_breaking_and_overlap_and_nothing_is_pushed_without_confirmation(self):
         # Dev A changes lookup()'s signature without reporting it; detection catches it.
@@ -332,6 +338,75 @@ class TwoClones(TempDirTestCase):
             kernel.run()
         self.assertEqual(runner.calls, [])
         self.assertIn("U002's files conflict with teammates' work on the shared branch: serve/lookup.py", out.getvalue())
+
+
+
+class ClaimsAndLocks(TwoClonesCase):
+    """P3b: claims and locks between the same two clones."""
+
+    def remote_refs(self) -> str:
+        return git(self.origin, "for-each-ref", "--format=%(refname)", "refs/ralph")
+
+    def test_a_claim_is_exclusive_and_the_loop_skips_a_teammates_unit(self):
+        self.assertEqual(self.ralph(self.a, "claim", "U001", "--cr", "1", "--yes")[0], 0)
+        self.assertIn("refs/ralph/claims/cr1/U001", self.remote_refs())
+        code, output = self.ralph(self.b, "claim", "U001", "--cr", "1", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("U001 is already claimed by Test until", output)
+        self.ralph(self.b, "sync", "--no-rebase")
+        runner = self.kernel(self.b, done_step("U002", {"serve/skim.py": SKIM + "#\n"}), max_iterations=1)
+        self.assertIn("Unit for this iteration: U002", runner.calls[0].prompt)          # not U001
+        code, output = self.ralph(self.b, "team")
+        self.assertIn("cr1/U001       Test", output)
+        self.assertEqual(self.ralph(self.a, "release", "U001", "--cr", "1", "--yes")[0], 0)
+        self.assertEqual(self.remote_refs(), "")
+
+    def test_an_expired_claim_can_be_taken_over_but_a_live_one_cant(self):
+        self.ralph(self.a, "claim", "U001", "--cr", "1", "--hours", "0", "--yes")      # expires at once
+        code, output = self.ralph(self.b, "claim", "U001", "--cr", "1", "--yes")
+        self.assertIn("has expired; use --take-over U001", output)
+        self.assertEqual(self.ralph(self.b, "claim", "--take-over", "U001", "--cr", "1", "--yes")[0], 0)
+        holder = git(self.origin, "show", "refs/ralph/claims/cr1/U001:claim.json")
+        self.assertIn('"email": "b@example.com"', holder)
+        code, output = self.ralph(self.a, "claim", "--take-over", "U001", "--cr", "1", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("isn't held by an expired claim", output)
+
+    def test_a_teammates_lock_stops_the_agent_editing_the_path(self):
+        self.assertEqual(self.ralph(self.a, "lock", "serve/lookup.py", "--reason", "reshaping it", "--yes")[0], 0)
+        code, output = self.ralph(self.b, "lock", "serve/lookup.py", "--yes")
+        self.assertIn("already locked by Test", output)
+        self.ralph(self.b, "sync", "--no-rebase")
+        kernel = Kernel(ProjectPaths(self.b), self.config(), ScriptedRunner(), StartOptions(cr="cr1"))
+        call = kernel.agent_call("x", self.tmp / "run-b", "unit-result.json")
+        policy = json.loads((self.tmp / "run-b" / "policy.json").read_text())
+        self.assertEqual(policy["locked"], [{"path": "serve/lookup.py", "holder": "Test"}])
+        edit = {"tool_name": "Edit", "tool_input": {"file_path": str(self.b / "serve" / "lookup.py")}, "cwd": str(self.b)}
+        self.assertIn("locked by Test", decide(edit, policy))
+        self.assertIsNone(decide({**edit, "tool_input": {"file_path": str(self.b / "serve" / "skim.py")}}, policy))
+        self.assertEqual(self.ralph(self.a, "unlock", "serve/lookup.py", "--yes")[0], 0)
+        code, output = self.ralph(self.b, "unlock", "serve/lookup.py", "--yes")
+        self.assertIn("isn't locked", output)
+
+    def test_claims_mode_builds_only_your_units_and_push_releases_finished_ones(self):
+        config = self.config()
+        config.team.claims = True
+        runner = self.kernel(self.a, config=config)                     # no claims: nothing runs
+        self.assertEqual(runner.calls, [])
+        self.ralph(self.a, "claim", "--next", "1", "--cr", "1", "--yes")
+        self.assertIn("refs/ralph/claims/cr1/U001", self.remote_refs())
+        runner = self.kernel(self.a, done_step("U001", {"serve/lookup.py": LOOKUP_V2}), config=config)
+        self.assertEqual(len(runner.calls), 1)                          # U001 only; U002 isn't claimed
+        code, output = self.ralph(self.a, "sync", "push", "--yes")
+        self.assertIn("Claims released afterwards (their units are done): U001", output)
+        self.assertIn("Released the claims on U001", output)
+        self.assertEqual(self.remote_refs(), "")
+
+    def test_a_teammates_claim_on_the_same_files_reaches_the_pack(self):
+        self.ralph(self.b, "claim", "U002", "--cr", "1", "--yes")       # U002 plans serve/lookup.py too
+        self.ralph(self.a, "sync", "--no-rebase")
+        runner = self.kernel(self.a, done_step("U001", {"serve/lookup.py": LOOKUP_V2}), max_iterations=1)
+        self.assertIn("[CLAIM-OVERLAP] cr1/U002 is claimed by Dev B until", runner.calls[0].prompt)
 
 
 class NoNetwork(TempDirTestCase):

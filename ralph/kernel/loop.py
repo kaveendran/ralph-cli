@@ -19,7 +19,7 @@ from ralph.context.pack import Pack, PackInputs, build_pack, format_checks
 from ralph.errors import RalphError
 from ralph.fsutil import read_text, write_text_atomic
 from ralph.graph.compile import discovered_unit_id
-from ralph.graph.schedule import next_unit, why_nothing_is_ready
+from ralph.graph.schedule import next_unit, ready_units, why_nothing_is_ready
 from ralph.kernel.control import Control
 from ralph.kernel.lock import RunLock
 from ralph.kernel.outcome import Evidence, Judgement, Verdict, judge
@@ -46,6 +46,7 @@ from ralph.skills.refresh import stale_skills
 from ralph.skills.registry import discover as discover_skills
 from ralph.skills.select import suggest as suggest_skills
 from ralph.team import interfaces, ledger
+from ralph.team.claims import my_claims, others_claims, read_claims, read_locks
 from ralph.team.impact import ImpactReport, age, assess, team_view
 from ralph.vcs import commit as vcs
 from ralph.vcs.commit import RunChanges, Snapshot
@@ -76,6 +77,7 @@ class StartOptions:
     allow_version_drift: bool = False
     review: str | None = None            # overrides verify.review for this run
     run_budget_usd: float | None = None  # overrides loop.max_cost_usd for this run
+    mine: bool = False                   # only units you've claimed (as `[team] claims = true`)
 
 
 class Kernel:
@@ -332,8 +334,29 @@ class Kernel:
     # ── 2. Select ────────────────────────────────────────────────────────────
 
     def select(self, units: dict[str, Unit]) -> Unit | None:
+        """The next ready unit, leaving out units teammates have claimed (as of your last sync).
+        With `[team] claims = true`, only units you've claimed yourself run."""
         only = set(self.options.only_units) or None
+        claims = read_claims(self.git)
+        if (self.config.team.claims or self.options.mine) and only is None:
+            only = set(my_claims(claims, self.email, self.cr.name))
+        theirs = others_claims(claims, self.email, self.cr.name)
+        if theirs:
+            only = (only if only is not None else set(units)) - set(theirs)
         return next_unit(units, only)
+
+    def claim_reasons(self, units: dict[str, Unit]) -> list[str]:
+        """Why ready units won't run here: a teammate holds them, or (claims mode) you don't."""
+        claims = read_claims(self.git)
+        theirs = others_claims(claims, self.email, self.cr.name)
+        reasons = [f"{c.unit} is claimed by {c.dev or c.email} until {c.expires_at[:16].replace('T', ' ')}"
+                   for c in theirs.values() if c.unit in units and units[c.unit].status is not Status.DONE]
+        if (self.config.team.claims or self.options.mine) and not self.options.only_units:
+            ready = [u.id for u in ready_units(units) if u.id not in theirs]
+            unclaimed = [u for u in ready if u not in my_claims(claims, self.email, self.cr.name)]
+            if unclaimed:
+                reasons.append(f"you haven't claimed {', '.join(unclaimed[:5])}: 'ralph claim --next 3' reserves some")
+        return reasons
 
     # ── 3. Impact check ──────────────────────────────────────────────────────
 
@@ -415,7 +438,8 @@ class Kernel:
             json_schema=schema(schema_name),
             skip_permissions=allowed.skip_permissions, permission_mode=allowed.mode,
             allowed_tools=allowed.allowed_tools,
-            settings_file=write_run_settings(self.root, run_dir, self.config.verify.frozen, allowed.sandbox),
+            settings_file=write_run_settings(self.root, run_dir, self.config.verify.frozen, allowed.sandbox,
+                                             self._locked_by_others()),
             agents_file=write_agents_file(run_dir),
             hermetic=runner_config.hermetic,
             mcp_config=project_mcp_config(self.root, run_dir) if runner_config.hermetic else None,
@@ -423,6 +447,11 @@ class Kernel:
             env={**agent_env(self.root, runner_config.compact_window, runner_config.hermetic),
                  **otel_env(self.config.telemetry, developer=self.developer, cr=self.cr.name)},
         )
+
+    def _locked_by_others(self) -> list[dict]:
+        """Paths teammates have locked (as of your last sync); the guardrail hook denies edits to them."""
+        return [{"path": lock.path, "holder": lock.dev or lock.email}
+                for lock in read_locks(self.git) if not lock.held_by(self.email)]
 
     def _plan(self) -> Plan | None:
         path = self.cr.plan
@@ -756,7 +785,7 @@ class Kernel:
         (the convergence check found gaps and added units for them)."""
         if any(u.status is not Status.DONE and not u.triage for u in units.values()):
             ui.warn("Nothing is ready to run:")
-            reasons = why_nothing_is_ready(units)
+            reasons = why_nothing_is_ready(units) + self.claim_reasons(units)
             for reason in reasons:
                 ui.info(f"    {reason}")
             self.notifier.send("stopped", "nothing is ready to run: " + "; ".join(reasons[:3]), cr=self.cr.name)

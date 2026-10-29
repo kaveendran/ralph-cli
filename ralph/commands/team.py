@@ -18,7 +18,9 @@ from ralph.model.plan import parse_plan
 from ralph.model.store import UnitStore
 from ralph.model.unit import Status, Unit
 from ralph.paths import ProjectPaths
+from ralph.commands.claims import release_claims
 from ralph.team import remote
+from ralph.team.claims import read_claims, read_locks
 from ralph.team.impact import age, assess, team_view, touches
 from ralph.team.ledger import LEDGER_DIR, read_local, read_pending
 from ralph.team.shared import Shared, ahead_behind, has_ref, last_fetch, local_ref, shared_branch
@@ -59,8 +61,8 @@ def _email(git: Git) -> str:
     return git.run("config", "user.email", check=False).stdout.strip()
 
 
-def _open_units(project: ProjectPaths) -> list[tuple[Unit, str]]:
-    """(unit, plan text) for every unit not done yet, across CRs."""
+def _all_units(project: ProjectPaths) -> list[tuple[Unit, str]]:
+    """(unit, plan text) for every unit, across CRs."""
     found = []
     for name in project.cr_names():
         cr = project.cr(name)
@@ -69,10 +71,14 @@ def _open_units(project: ProjectPaths) -> list[tuple[Unit, str]]:
             continue
         plan = parse_plan(cr.plan) if cr.plan.exists() else None
         for unit in store.load().values():
-            if unit.status is not Status.DONE and not unit.triage:
-                plan_unit = plan.unit(unit.id) if plan else None
-                found.append((unit, plan_unit.section if plan_unit else unit.description))
+            plan_unit = plan.unit(unit.id) if plan else None
+            found.append((unit, plan_unit.section if plan_unit else unit.description))
     return found
+
+
+def _open_units(project: ProjectPaths) -> list[tuple[Unit, str]]:
+    """(unit, plan text) for every unit not done yet, across CRs."""
+    return [(u, text) for u, text in _all_units(project) if u.status is not Status.DONE and not u.triage]
 
 
 def _entry_line(entry, me: str = "") -> str:
@@ -89,12 +95,13 @@ def run_sync(args) -> int:
     project, config = load_project()
     git = Git(project.root)
     shared = _require_shared(git, config)
-    return push(project, git, shared, args) if args.action == "push" else pull(project, git, config, shared, args)
+    return push(project, git, config, shared, args) if args.action == "push" else pull(project, git, config, shared, args)
 
 
 def pull(project: ProjectPaths, git: Git, config, shared: Shared, args) -> int:
-    ui.header("sync", f"fetching {shared.name} (the only network call; nothing is pushed)")
+    ui.header("sync", f"fetching {shared.name} and the team's claims and locks (nothing is pushed)")
     remote.fetch(git, shared)
+    remote.fetch_team_refs(git, shared.remote, config.team.refs)
     view = team_view(git, config.team, _email(git))
     ahead, behind = ahead_behind(git, view.ref)
     incoming = [e for e in view.entries if e.pending]
@@ -149,7 +156,7 @@ def _rebase(project: ProjectPaths, git: Git, shared: Shared, yes: bool) -> int:
     return 0
 
 
-def push(project: ProjectPaths, git: Git, shared: Shared, args) -> int:
+def push(project: ProjectPaths, git: Git, config, shared: Shared, args) -> int:
     ref = shared.ref if has_ref(git, shared.ref) else ""     # "" when the shared branch was never fetched
     if ref and git.run("merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode != 0:
         ui.error(f"Your branch is behind {shared.name} (as of your last fetch), so pushing would be rejected.",
@@ -173,6 +180,9 @@ def push(project: ProjectPaths, git: Git, shared: Shared, args) -> int:
     ui.info(f"  {len(entries)} ledger entr{'y' if len(entries) == 1 else 'ies'} (what teammates will see in 'ralph sync')")
     if tags:
         ui.info(f"  Tags: {', '.join(tags)}")
+    finished = _finished_claims(project, git)
+    if finished:
+        ui.info(f"  Claims released afterwards (their units are done): {', '.join(c.unit for c in finished)}")
     uncommitted = git.status()
     if uncommitted:
         ui.info(f"  Not included: {len(uncommitted)} uncommitted file(s) stay local.")
@@ -189,7 +199,18 @@ def push(project: ProjectPaths, git: Git, shared: Shared, args) -> int:
                  "Someone pushed first: run 'ralph sync', then push again." if rejected else "")
         return 1
     ui.ok(f"Published {len(commits)} commit(s) to {shared.name}.")
+    if finished:
+        released = release_claims(git, shared.remote, config.team.refs, finished)
+        if released:
+            ui.ok(f"Released the claims on {', '.join(released)}.")
     return 0
+
+
+def _finished_claims(project: ProjectPaths, git: Git) -> list:
+    """Your claims on units that are done, in this clone: they can go once the work is published."""
+    email = _email(git)
+    done = {(u.cr, u.id) for u, _ in _all_units(project) if u.status is Status.DONE}
+    return [c for c in read_claims(git) if c.held_by(email) and (c.cr, c.unit) in done]
 
 
 # ── views (local only) ───────────────────────────────────────────────────────
@@ -268,7 +289,6 @@ def run_team(args) -> int:
         by_dev[entry.dev or entry.email].append(entry)
     if not by_dev:
         ui.info("  Nothing in the ledger for that period.")
-        return 0
     for dev, items in sorted(by_dev.items()):
         units = ", ".join(f"{e.cr}/{e.unit}" for e in sorted(items, key=lambda e: e.at)[-6:])
         ui.info(f"  {dev:<20} {len(items)} unit(s), last {max(e.at for e in items)[:10]}: {units}")
@@ -277,10 +297,23 @@ def run_team(args) -> int:
     for entry in recent:
         for path in entry.paths:
             files[path].add(entry.dev or entry.email)
+    claims, locks, email = read_claims(git), read_locks(git), _email(git)
+    if claims:
+        ui.info("\n  Claims (as of your last sync):")
+        for claim in sorted(claims, key=lambda c: (c.cr, c.unit)):
+            who = "you" if claim.held_by(email) else claim.dev or claim.email
+            state = "expired" if claim.expired() else f"until {claim.expires_at[:16].replace('T', ' ')}"
+            ui.info(f"    {claim.cr}/{claim.unit:<10} {who:<18} {state}")
+    if locks:
+        ui.info("\n  Locks:")
+        for lock in sorted(locks, key=lambda l: l.path):
+            who = "you" if lock.held_by(email) else lock.dev or lock.email
+            ui.info(f"    {lock.path:<30} {who:<18} {lock.reason}")
+
     shared_files = sorted((p, devs) for p, devs in files.items() if len(devs) > 1)
     ui.info(f"\n  Files more than one of you changed: {len(shared_files)}")
     for path, devs in shared_files[:15]:
         ui.info(f"    {path}  ({', '.join(sorted(devs))})")
     if shared_files:
-        ui.info("  If this list keeps growing, claims and locks (P3b) would help; until then, split work by area.")
+        ui.info("  If this list keeps growing, claim units ('ralph claim') and lock shared files ('ralph lock').")
     return 0

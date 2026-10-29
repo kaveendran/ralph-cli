@@ -49,11 +49,13 @@ def project_mcp_config(root: Path, run_dir: Path) -> Path:
     return empty
 
 
-def write_run_settings(root: Path, run_dir: Path, frozen: list[str], sandbox: dict | None = None) -> Path:
+def write_run_settings(root: Path, run_dir: Path, frozen: list[str], sandbox: dict | None = None,
+                       locked: list[dict] = ()) -> Path:
     """Write settings.json (the hook, and the sandbox when asked for) and policy.json
-    (what the hook guards); return settings.json."""
+    (what the hook guards: frozen paths, and paths teammates have locked); return settings.json."""
     policy_path = run_dir / "policy.json"
-    write_text_atomic(policy_path, json.dumps({"root": str(root), "frozen": frozen}, indent=2) + "\n")
+    policy = {"root": str(root), "frozen": frozen, "locked": list(locked)}
+    write_text_atomic(policy_path, json.dumps(policy, indent=2) + "\n")
     command = (f"PYTHONPATH={shlex.quote(str(PACKAGE_DIR.parent))} {shlex.quote(sys.executable)} -P "
                f"-m ralph.runner.hooks {shlex.quote(str(policy_path))}")
     hook = {"type": "command", "command": command, "timeout": 30}

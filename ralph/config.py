@@ -84,6 +84,10 @@ class TeamConfig:
     ledger: bool = True                 # write .ralph/ledger/ entries with each unit's commit
     impact_days: int = 7                # teammates' entries this recent count for the impact check
     stale_sync_hours: int = 12          # remind you to `ralph sync` when the last fetch is older
+    claims: bool = False                # only build units you've claimed (`ralph claim`)
+    lease_hours: int = 48               # a claim expires after this long unless renewed
+    refs: str = "refs/ralph"            # where claims and locks live on the remote; if your host rejects
+                                        # custom refs, use "refs/heads/ralph-claims"
 
 
 @dataclass

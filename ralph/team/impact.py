@@ -7,6 +7,7 @@
   BREAKING  a teammate changed an interface in a way that breaks callers, and the
             unit's plan entry or files use it
   OVERLAP   a teammate changed files the unit plans to change or already changed
+  CLAIM-OVERLAP  a teammate has claimed another unit that plans to change the same files
   INFO      everything else (shown by `ralph changes`, never in the pack)
 
 BREAKING and OVERLAP lines go into the unit's pack, at most 3,000 characters.
@@ -21,6 +22,7 @@ from pathlib import Path
 from ralph.config import TeamConfig
 from ralph.fsutil import read_text
 from ralph.model.unit import Unit
+from ralph.team.claims import Claim, others_claims, read_claims
 from ralph.team.ledger import LedgerEntry, from_others, read_local, read_pending
 from ralph.team.shared import Shared, last_fetch, local_ref
 from ralph.vcs.git import Git
@@ -54,17 +56,33 @@ class TeamView:
     entries: list[LedgerEntry]                # teammates' entries that can still matter
     conflicts: list[str]                      # files that wouldn't merge cleanly
     last_fetch: datetime | None
+    claims: list[Claim] = field(default_factory=list)      # teammates' live claims
 
 
 def team_view(git: Git, config: TeamConfig, my_email: str, now: datetime | None = None) -> TeamView:
     shared, ref = local_ref(git, config)
     entries = from_others(read_local(git) + read_pending(git, ref), my_email, config.impact_days, now)
-    return TeamView(shared, ref, entries, merge_conflicts(git, ref), last_fetch(git))
+    claims = list(others_claims(read_claims(git), my_email, now=now).values())
+    return TeamView(shared, ref, entries, merge_conflicts(git, ref), last_fetch(git), claims)
+
+
+def claim_overlaps(unit: Unit, claims: list[Claim]) -> list[Impact]:
+    mine = sorted(set(unit.key_files) | set(unit.wip_paths))
+    impacts = []
+    for claim in claims:
+        if (claim.cr, claim.unit) == (unit.cr, unit.id):
+            continue
+        shared = [p for p in claim.planned_files if touches(p, mine) or any(touches(m, [p]) for m in mine)]
+        if shared:
+            impacts.append(Impact("CLAIM-OVERLAP", None, f"{claim.cr}/{claim.unit} is claimed by "
+                                  f"{claim.dev or claim.email} until {claim.expires_at[:10]} and plans to change "
+                                  f"{', '.join(shared[:4])}: coordinate before you change them", shared))
+    return impacts
 
 
 def assess(view: TeamView, unit: Unit, unit_text: str, root: Path) -> "ImpactReport":
     mine = unit.key_files + unit.wip_paths
-    return ImpactReport(classify(unit, unit_text, view.entries, root),
+    return ImpactReport(classify(unit, unit_text, view.entries, root) + claim_overlaps(unit, view.claims),
                         conflicts_here=[p for p in view.conflicts if touches(p, mine)],
                         last_fetch=view.last_fetch)
 
@@ -77,7 +95,7 @@ class ImpactReport:
 
     @property
     def relevant(self) -> list[Impact]:
-        return [i for i in self.impacts if i.kind in ("BREAKING", "OVERLAP")]
+        return [i for i in self.impacts if i.kind in ("BREAKING", "OVERLAP", "CLAIM-OVERLAP")]
 
     @property
     def duplicates(self) -> list[Impact]:

@@ -77,6 +77,10 @@ def decide(event: dict, policy: dict) -> str | None:
         pattern = _matches(path, policy.get("frozen", []))
         if pattern:
             return f"ralph: {path} is frozen ({pattern}) and must not change."
+        for lock in policy.get("locked", []):
+            if _matches(path, [lock["path"]]):
+                return (f"ralph: {path} is locked by {lock['holder']} ({lock['path']}); report it as a blocker "
+                        "instead of changing it.")
     return None
 
 
