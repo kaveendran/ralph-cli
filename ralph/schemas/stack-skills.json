@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["skills"],
+  "additionalProperties": false,
+  "properties": {
+    "skills": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "body"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "body": {"type": "string"},
+          "packages": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

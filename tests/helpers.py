@@ -161,7 +161,7 @@ class ScriptedRunner:
         return self.steps.pop(0)(call)
 
 
-def done_step(unit: str, files: dict[str, str], handoff: str = "", issues=(), commit: bool = False):
+def done_step(unit: str, files: dict[str, str], handoff: str = "", issues=(), commit: bool = False, learnings=()):
     """A step that writes `files` and reports the unit done."""
     def step(call: AgentCall) -> AgentResult:
         for path, text in files.items():
@@ -172,7 +172,7 @@ def done_step(unit: str, files: dict[str, str], handoff: str = "", issues=(), co
             git(call.cwd, "add", "-A")
             git(call.cwd, "commit", "-qm", "agent commit")
         report = {"unit": unit, "status": "done", "summary": f"did {unit}", "handoff": handoff,
-                  "discovered_issues": list(issues)}
+                  "discovered_issues": list(issues), "learnings": list(learnings)}
         return agent_result(call, result_events(report))
     return step
 

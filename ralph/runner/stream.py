@@ -29,6 +29,7 @@ class StreamStats:
     tool_calls: Counter = field(default_factory=Counter)
     repeated_call_max: int = 0           # longest run of one identical tool call, back to back
     last_text: str = ""                  # the main agent's latest text
+    skills_invoked: list = field(default_factory=list)   # names passed to the Skill tool
     usage_limited: bool = False
     init: dict | None = None
     result: dict | None = None
@@ -83,6 +84,8 @@ class StreamStats:
             if block.get("type") == "tool_use":
                 name = block.get("name", "?")
                 self.tool_calls[name] += 1
+                if name == "Skill":
+                    self.skills_invoked.append(str((block.get("input") or {}).get("skill", "")))
                 fingerprint = hashlib.sha1(
                     (name + json.dumps(block.get("input"), sort_keys=True, default=str)).encode()).hexdigest()
                 self._repeat_run = self._repeat_run + 1 if fingerprint == self._last_call else 1
@@ -117,6 +120,7 @@ class StreamStats:
             "permission_denials": len(result.get("permission_denials") or []),
             "subagent_calls": self.subagent_calls,
             "repeated_call_max": self.repeated_call_max,
+            "skills_invoked": sorted(set(self.skills_invoked)),
             "tool_calls": dict(sorted(self.tool_calls.items())),
         }
 

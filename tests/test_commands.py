@@ -97,6 +97,28 @@ class Commands(TempDirTestCase):
         self.assertIn("task: fix the flaky test", git(self.root, "log", "-1", "--format=%s"))
         self.assertIn("The date test fails at midnight.", runner.calls[0].prompt)
 
+    def test_skills_list_lint_refresh_and_eval_without_scenarios(self):
+        code, output = self.ralph("skills", "list")
+        self.assertIn("No skills", output)
+        folder = self.root / ".claude" / "skills" / "api"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text('---\nname: api\ndescription: Writes endpoints. Use when adding one.\n'
+                                         'ralph-versions:\n  fastapi: "0.115"\n---\n# API\n')
+        self.project.log_dir.mkdir()
+        self.project.iterations_log.write_text('{"agent": {"skills_invoked": ["api"]}}\n')
+        code, output = self.ralph("skills", "list")
+        self.assertIn("used in 1 iteration(s)", output)
+        self.assertEqual(self.ralph("skills", "lint")[0], 0)
+        self.assertEqual(self.ralph("skills", "refresh")[0], 0)
+        (self.root / "requirements.txt").write_text("fastapi==0.116.0\n")
+        code, output = self.ralph("skills", "refresh")
+        self.assertEqual(code, 1)
+        self.assertIn("api: written for fastapi 0.115, but requirements.txt has 0.116.0", output)
+        code, output = self.ralph("skills", "eval")
+        self.assertEqual(code, 0)
+        self.assertIn("api has no scenarios", output)
+        self.assertEqual(self.ralph("skills", "eval", "nope")[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

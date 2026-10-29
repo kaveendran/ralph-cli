@@ -52,10 +52,32 @@ class LoopConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Size budgets for what Claude loads (docs/meta-harness-plan.md §8). Over
+    budget is a warning at the start of each run, and an error with
+    `ralph memory lint --strict`."""
+    claude_md_lines: int = 200
+    agents_md_lines: int = 200
+    rule_lines: int = 50
+    skill_lines: int = 500
+    notes_lines: int = 200
+    learnings_in_pack: int = 5
+
+
+@dataclass
+class NotifyConfig:
+    webhook: str = ""                   # POST a JSON message here (a Slack incoming webhook works)
+    command: str = ""                   # or run this with the event JSON on stdin
+    events: list[str] = field(default_factory=lambda: ["blocked", "stopped", "complete", "usage_limit"])
+
+
+@dataclass
 class Config:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
 
 
 def _apply(target, values: dict, where: str) -> None:
@@ -80,7 +102,8 @@ def load_config(config_path: Path) -> Config:
     except tomllib.TOMLDecodeError as problem:
         raise RalphError(f"{config_path} isn't valid TOML: {problem}") from None
 
-    sections = {"runner": config.runner, "verify": config.verify, "loop": config.loop}
+    sections = {"runner": config.runner, "verify": config.verify, "loop": config.loop,
+                "memory": config.memory, "notify": config.notify}
     unknown = sorted(set(data) - set(sections))
     if unknown:
         raise RalphError(f"Unknown section(s) in {config_path}: {', '.join(unknown)}",

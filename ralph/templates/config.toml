@@ -29,3 +29,16 @@ paid_gates = {{PAID_GATES}}
 [loop]
 max_stalls = 3             # iterations in a row that change nothing
 tag_format = "{cr}-done"   # local tag when a CR converges; "" turns it off
+
+# Size budgets in lines, checked at start and by `ralph memory lint`.
+[memory]
+claude_md_lines = 200
+rule_lines = 50
+skill_lines = 500
+learnings_in_pack = 5      # unreviewed lessons per unit pack
+
+# Tell you when the loop needs you. Best-effort: a failure never changes what the loop does.
+[notify]
+# webhook = "https://hooks.slack.com/services/…"   # a JSON POST with a `text` field
+# command = "terminal-notifier -message 'ralph needs you'"   # gets the event as JSON on stdin
+events = ["blocked", "stopped", "complete", "usage_limit"]

@@ -98,6 +98,11 @@ class ProjectPaths:
         return self.ralph_dir / "control"
 
     @property
+    def learnings_inbox(self) -> Path:
+        """Lessons the agent reported, waiting for `ralph memory review`."""
+        return self.ralph_dir / "learnings" / "inbox.jsonl"
+
+    @property
     def log_dir(self) -> Path:
         return self.root / "log"
 

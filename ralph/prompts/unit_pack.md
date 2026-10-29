@@ -21,6 +21,14 @@ This is the complete entry from `{{PLAN_PATH}}`. You don't need to read the rest
 
 {{SPEC_EXCERPTS}}
 
+## Lessons from earlier units
+
+{{LESSONS}}
+
+## Skills that fit this unit
+
+{{SKILLS}}
+
 ## Last attempt at this unit
 
 {{LAST_ATTEMPT}}

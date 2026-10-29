@@ -27,6 +27,7 @@ class IterationRecord:
     agent: dict = field(default_factory=dict)        # StreamStats.summary()
     gates: list[dict] = field(default_factory=list)  # name, passed, exit_code, seconds
     review: str = ""
+    review_cost_usd: float = 0.0
     integrity_failures: list[str] = field(default_factory=list)
     changed_files: int = 0
     commit: str = ""
@@ -68,7 +69,7 @@ def unit_totals(records: list[dict], cr: str) -> dict[str, dict]:
         unit["iterations"] += 1
         unit["turns"] += agent.get("num_turns") or 0
         unit["minutes"] += (agent.get("duration_ms") or 0) / 60000
-        unit["cost_usd"] += agent.get("total_cost_usd") or 0
+        unit["cost_usd"] += (agent.get("total_cost_usd") or 0) + (record.get("review_cost_usd") or 0)
         unit["peak_context"] = max(unit["peak_context"], agent.get("peak_context") or 0)
         unit["compactions"] += agent.get("compactions") or 0
     return totals

@@ -12,23 +12,25 @@ import subprocess
 import sys
 
 from ralph import __version__, ui
-from ralph.commands import control, doctor, graph, migrate, scaffold, start, status, units, watch
+from ralph.commands import control, doctor, graph, memory, migrate, scaffold, skills, start, status, units, watch
 from ralph.errors import RalphError
 from ralph.prompts import PACKAGE_DIR
 
 REPO_DIR = PACKAGE_DIR.parent
 BASH_COMMANDS = {"critique", "refine-plan", "retro", "deploy"}
 LEGACY_COMMANDS = {"init", "add-cr", "status", "start", "watch", *BASH_COMMANDS}
-COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, migrate, doctor)
+COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, memory, skills, migrate, doctor)
 
 EPILOG = """\
 typical workflow:
   ralph init                         set up the project, then write development/initial/spec/spec.md
+  ralph skills init --stack "…"      (optional) draft starter skills for your stack, then review them
   ralph start --mode plan --cr initial
   ralph graph                        review the units and their order
   ralph start --cr initial           one bounded, verified unit per iteration
-  ralph watch                        (another terminal) follow it live
+  ralph watch                        (another terminal) follow it live; --serve for a browser view
   ralph status                       progress, blocked units, per-unit time/cost/context
+  ralph memory review                now and then: promote the lessons the agent reported
 
 still run by the original bash scripts: critique, refine-plan, retro, deploy
 the previous loop, for CRs that aren't migrated: ralph legacy start --cr N

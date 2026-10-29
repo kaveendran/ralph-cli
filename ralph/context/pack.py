@@ -22,6 +22,7 @@ UNIT_SECTION_CHARS = 16_000
 DEPENDENCY_CHARS = 3_000
 SPEC_CHARS = 12_000
 LAST_ATTEMPT_CHARS = 4_000
+LESSON_CHARS = 2_000
 INSTRUCTIONS_CHARS = 8_000
 
 
@@ -35,6 +36,8 @@ class PackInputs:
     last_attempt: str = ""       # the unit's recent notes: failures, review gaps
     steering: str = ""           # notes from `ralph steer`
     checks: list[tuple[str, str]] = field(default_factory=list)   # (gate name, command) the harness will run
+    lessons: list[str] = field(default_factory=list)               # unreviewed lessons that match the unit
+    skills: list[tuple[str, str]] = field(default_factory=list)    # (skill name, why it fits)
     branch: str = ""
     head: str = ""
 
@@ -116,6 +119,10 @@ def build_pack(inputs: PackInputs) -> Pack:
         "UNIT_SECTION": _cap("unit section", _unit_section(inputs), UNIT_SECTION_CHARS, truncated),
         "DEPENDENCIES": _cap("dependencies", _dependencies(inputs), DEPENDENCY_CHARS, truncated),
         "SPEC_EXCERPTS": _spec_section(inputs, pointers),
+        "LESSONS": _cap("lessons", "\n".join(f"- {lesson}" for lesson in inputs.lessons) or "None recorded yet.",
+                        LESSON_CHARS, truncated),
+        "SKILLS": "\n".join(f"- `{name}`: {why}" for name, why in inputs.skills)
+                  or "None in particular; use any project skill whose description fits.",
         "LAST_ATTEMPT": _cap("last attempt", inputs.last_attempt.strip() or "This is the first attempt.",
                              LAST_ATTEMPT_CHARS, truncated),
         "INSTRUCTIONS": _cap("instructions", inputs.instructions.strip() or "None beyond the loop contract.",

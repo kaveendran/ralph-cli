@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ralph watch</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1d2939; --muted: #667085; --line: #eaecf0; --ok: #067647; --warn: #b54708; --bad: #b42318; --bar: #6941c6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0c111d; --fg: #f5f5f6; --muted: #94969c; --line: #1f242f; --ok: #47cd89; --warn: #fdb022; --bad: #f97066; --bar: #9e77ed; } }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; } .muted { color: var(--muted); }
+  section { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 12px 0; max-width: 1100px; }
+  table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; } .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .done { color: var(--ok); } .retry, .in_progress { color: var(--warn); } .blocked, .failed, .infra { color: var(--bad); }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; } .bar > div { height: 100%; background: var(--bar); }
+  pre { white-space: pre-wrap; margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 260px; overflow: auto; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>ralph watch</h1>
+<div class="muted" id="where">connecting…</div>
+
+<section><b>Now</b>
+  <div id="now" class="muted">No iteration running.</div>
+  <pre id="tools"></pre>
+</section>
+
+<section><b>Units</b>
+  <div id="progress"></div>
+</section>
+
+<section><b>Iterations</b>
+  <div class="scroll"><table><thead><tr><th>run</th><th>#</th><th>unit</th><th>outcome</th><th class="num">turns</th><th class="num">min</th><th class="num">$</th><th class="num">peak context</th><th class="num">compactions</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+
+<script>
+const text = (value) => document.createTextNode(value == null ? "" : String(value));
+function cell(row, value, cls) { const td = row.insertCell(); td.appendChild(text(value)); if (cls) td.className = cls; }
+function render(state) {
+  document.getElementById("where").textContent = state.root;
+  const now = state.current;
+  document.getElementById("now").textContent = now
+    ? `${now.run} · context ${now.context_now.toLocaleString()} (peak ${now.peak_context.toLocaleString()}) · ${now.tool_calls} tool calls · ${now.compactions} compactions`
+    : "No iteration running.";
+  document.getElementById("tools").textContent = now ? now.recent_tools.join("\n") : "";
+  const progress = document.getElementById("progress"); progress.textContent = "";
+  for (const cr of state.crs) {
+    const line = document.createElement("div");
+    line.appendChild(text(`${cr.name}: ${cr.done}/${cr.total} done · ${cr.in_progress} in progress · ${cr.blocked} blocked`));
+    const bar = document.createElement("div"); bar.className = "bar";
+    const fill = document.createElement("div"); fill.style.width = (cr.total ? 100 * cr.done / cr.total : 0) + "%";
+    bar.appendChild(fill); line.appendChild(bar); progress.appendChild(line);
+  }
+  const rows = document.getElementById("rows"); rows.textContent = "";
+  for (const r of state.records.slice().reverse()) {
+    const a = r.agent || {}; const row = rows.insertRow();
+    cell(row, r.run_id); cell(row, r.iteration); cell(row, r.unit); cell(row, r.outcome, r.outcome);
+    cell(row, a.num_turns || 0, "num"); cell(row, ((a.duration_ms || 0) / 60000).toFixed(1), "num");
+    cell(row, ((a.total_cost_usd || 0) + (r.review_cost_usd || 0)).toFixed(2), "num"); cell(row, (a.peak_context || 0).toLocaleString(), "num");
+    cell(row, a.compactions || 0, "num");
+  }
+}
+const events = new EventSource("/events");
+events.onmessage = (message) => render(JSON.parse(message.data));
+events.onerror = () => { document.getElementById("where").textContent = "disconnected — is `ralph watch --serve` still running?"; };
+</script>
+</body>
+</html>

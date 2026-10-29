@@ -23,10 +23,14 @@ from ralph.graph.schedule import next_unit, why_nothing_is_ready
 from ralph.kernel.control import Control
 from ralph.kernel.lock import RunLock
 from ralph.kernel.outcome import Evidence, Judgement, Verdict, judge
+from ralph.memory.learnings import read_inbox
+from ralph.memory.learnings import relevant as relevant_lessons
+from ralph.memory.lint import lint_memory
 from ralph.model.plan import Plan, parse_plan
 from ralph.model.spec import Spec, parse_spec
 from ralph.model.store import UnitStore
 from ralph.model.unit import Status, Unit
+from ralph.monitor.notify import Notifier
 from ralph.monitor.signals import SignalMonitor
 from ralph.monitor.telemetry import IterationRecord, append_record, now_iso
 from ralph.paths import ProjectPaths
@@ -35,6 +39,11 @@ from ralph.runner import compat
 from ralph.runner.base import AgentCall, AgentResult, Runner
 from ralph.runner.settings import agent_env, project_mcp_config, write_agents_file, write_run_settings
 from ralph.runner.stream import describe_tool_use
+from ralph.skills.deps import installed_versions
+from ralph.skills.lint import lint_skills
+from ralph.skills.refresh import stale_skills
+from ralph.skills.registry import discover as discover_skills
+from ralph.skills.select import suggest as suggest_skills
 from ralph.vcs import commit as vcs
 from ralph.vcs.commit import RunChanges, Snapshot
 from ralph.vcs.git import Git
@@ -77,6 +86,8 @@ class Kernel:
         self.converged_once = False
         self._plan_cache: tuple[float, Plan | None] | None = None
         self._spec_cache: dict[str, Spec | None] = {}
+        self._skill_cache = None
+        self.notifier = Notifier(config.notify, project.root.name)
 
     # ── The loop ─────────────────────────────────────────────────────────────
 
@@ -153,11 +164,25 @@ class Kernel:
                 f"max ${self.options.max_budget_usd or runner_config.max_budget_usd:g}, "
                 f"{runner_config.timeout_minutes} min, compaction at {runner_config.compact_window:,} tokens")
         ui.info(f"  Hermetic: {'on' if runner_config.hermetic else 'off'} · pushes: never (sync is manual)")
+        self._memory_and_skill_checks()
         if not self.config.verify.gates:
             ui.warn("No gates are configured in .ralph/config.toml, so nothing checks the agent's work "
                     "except the review. Add [verify.gates].")
         elif not self.options.skip_baseline:
             self._baseline()
+
+    def _memory_and_skill_checks(self) -> None:
+        """Warn (never stop) about memory over budget, broken skills and skills gone stale."""
+        findings = lint_memory(self.root, self.config.memory, [self.cr.units_dir], self.project.learnings_inbox)
+        findings += [f for f in lint_skills(self._skills(), self.config.memory.skill_lines) if f.severity == "error"]
+        for finding in findings[:6]:
+            ui.warn(f"{finding.path.relative_to(self.root) if finding.path.is_absolute() else finding.path}: "
+                    f"{finding.message}")
+        if len(findings) > 6:
+            ui.warn(f"…and {len(findings) - 6} more; run 'ralph memory lint' and 'ralph skills lint'.")
+        for stale in stale_skills(self._skills(), installed_versions(self.root)):
+            ui.warn(f"Skill '{stale.item}' was written for {stale.package} {stale.written_for}, but "
+                    f"{stale.source} has {stale.installed}. Run 'ralph skills refresh'.")
 
     def _check_branch(self) -> None:
         if self.options.allow_main:
@@ -216,10 +241,22 @@ class Kernel:
         return self.agent_call(pack.text, run_dir, "unit-result.json"), pack
 
     def build_unit_pack(self, unit: Unit, units: dict[str, Unit], steering: str = "") -> Pack:
+        plan = self._plan()
+        plan_unit = plan.unit(unit.id) if plan else None
+        lessons = relevant_lessons(read_inbox(self.project.learnings_inbox), unit.key_files,
+                                   self.config.memory.learnings_in_pack)
+        skills = suggest_skills(self._skills(), unit, plan_unit.section if plan_unit else unit.description)
         return build_pack(PackInputs(
-            unit=unit, units=units, plan=self._plan(), specs=self._specs(unit),
+            unit=unit, units=units, plan=plan, specs=self._specs(unit),
             instructions=read_text(self.cr.instructions), last_attempt=self.store.recent_notes(unit.id),
-            steering=steering, checks=self.checks_for(unit), branch=self.git.branch(), head=self.git.head()))
+            steering=steering, checks=self.checks_for(unit), branch=self.git.branch(), head=self.git.head(),
+            lessons=[_lesson_line(lesson) for lesson in lessons],
+            skills=[(skill.name, why) for skill, why in skills]))
+
+    def _skills(self):
+        if self._skill_cache is None:
+            self._skill_cache = discover_skills(self.root)
+        return self._skill_cache
 
     def checks_for(self, unit: Unit | None) -> list[tuple[str, str]]:
         """The gates a unit must pass, plus any `ralph steer --hard` checks."""
@@ -291,6 +328,8 @@ class Kernel:
             self._keep_wip(unit, snapshot)
             self.record(iteration, unit, "usage_limit", result, snapshot, run_dir)
             ui.warn("The Claude usage limit was reached. Stopping; run 'ralph start' again after it resets.")
+            self.notifier.send("usage_limit", f"the usage limit was reached during {unit.id}; the loop stopped",
+                               cr=self.cr.name, unit=unit.id)
             return True
         if result.failed:
             self._keep_wip(unit, snapshot)
@@ -324,6 +363,7 @@ class Kernel:
                 f"{self.failures} of {limit} in a row. Log: {result_log(run_dir)}")
         if self.failures >= limit:
             ui.error(f"Stopping: claude failed {limit} times in a row.", "Check the last log, then run 'ralph start' again.")
+            self.notifier.send("stopped", f"claude failed {limit} times in a row", cr=self.cr.name, unit=unit.id)
             return True
         delay = self.config.loop.retry_delay_seconds * 2 ** (self.failures - 1)
         ui.info(f"  Retrying in {delay}s…")
@@ -420,7 +460,7 @@ class Kernel:
         unit.done = {"by": self.developer, "at": now_iso()}
         self.store.save(unit)
         state = [self.store.path(unit.id), self.store.notes_path(unit.id),
-                 self.project.ralph_dir / "learnings" / "inbox.jsonl"] + [self.store.path(u) for u in added]
+                 self.project.learnings_inbox] + [self.store.path(u) for u in added]
         message = f"{unit.id}: {unit.title}\n\n{report.get('summary', '').strip()}\n\nGenerated-by: ralph (Claude Code)"
         sha = vcs.commit_paths(self.git, work + self._existing_relative(state), message)
         ui.ok(f"{unit.id} done and committed ({sha[:10]}).")
@@ -440,6 +480,7 @@ class Kernel:
         state = self._existing_relative([self.store.path(unit.id), self.store.notes_path(unit.id)])
         sha = vcs.commit_paths(self.git, state, f"ralph: {unit.id} blocked\n\n{reason}")
         ui.warn(f"{unit.id} is blocked: {reason}")
+        self.notifier.send("blocked", f"{unit.id} {unit.title} is blocked: {reason}", cr=self.cr.name, unit=unit.id)
         return sha
 
     def _add_discovered(self, unit: Unit, units: dict[str, Unit], issues: list[str]) -> list[str]:
@@ -456,7 +497,7 @@ class Kernel:
     def _capture_learnings(self, unit: Unit, learnings: list[dict]) -> None:
         if not learnings:
             return
-        inbox = self.project.ralph_dir / "learnings" / "inbox.jsonl"
+        inbox = self.project.learnings_inbox
         inbox.parent.mkdir(parents=True, exist_ok=True)
         with open(inbox, "a", encoding="utf-8") as handle:
             for item in learnings[:5]:
@@ -479,6 +520,7 @@ class Kernel:
             gates=[{"name": g.name, "passed": g.passed, "exit_code": g.exit_code, "seconds": round(g.seconds, 1)}
                    for g in (evidence.gates if evidence else [])],
             review=evidence.review.verdict if evidence and evidence.review else "",
+            review_cost_usd=evidence.review.cost_usd if evidence and evidence.review else 0.0,
             integrity_failures=evidence.integrity.failures if evidence and evidence.integrity else [],
             changed_files=changed, commit=commit, run_dir=str(run_dir.relative_to(self.root)), notes=notes)
         append_record(self.project.iterations_log, record)
@@ -492,19 +534,20 @@ class Kernel:
     # 9. Decide
 
     def decide(self, judgement: Judgement, got_result: bool, changes: RunChanges) -> bool:
-        if judgement.verdict is Verdict.INFRA:
-            ui.error("Stopping: " + judgement.reason)
-            return True
+        reason = ""
         self.invalid_results = 0 if got_result else self.invalid_results + 1
-        if self.invalid_results >= self.config.loop.max_invalid_results:
-            ui.error(f"Stopping: {self.invalid_results} iterations in a row without a valid result from the agent.")
-            return True
         made_progress = judgement.verdict is Verdict.DONE or bool(changes.paths)
         self.stalls = 0 if made_progress else self.stalls + 1
-        if self.config.loop.max_stalls and self.stalls >= self.config.loop.max_stalls:
-            ui.error(f"Stopping: {self.stalls} iterations in a row changed nothing.")
-            return True
-        return False
+        if judgement.verdict is Verdict.INFRA:
+            reason = judgement.reason
+        elif self.invalid_results >= self.config.loop.max_invalid_results:
+            reason = f"{self.invalid_results} iterations in a row without a valid result from the agent"
+        elif self.config.loop.max_stalls and self.stalls >= self.config.loop.max_stalls:
+            reason = f"{self.stalls} iterations in a row changed nothing"
+        if reason:
+            ui.error("Stopping: " + reason)
+            self.notifier.send("stopped", reason, cr=self.cr.name)
+        return bool(reason)
 
     # ── When nothing is ready ────────────────────────────────────────────────
 
@@ -513,8 +556,10 @@ class Kernel:
         (the convergence check found gaps and added units for them)."""
         if any(u.status is not Status.DONE and not u.triage for u in units.values()):
             ui.warn("Nothing is ready to run:")
-            for reason in why_nothing_is_ready(units):
+            reasons = why_nothing_is_ready(units)
+            for reason in reasons:
                 ui.info(f"    {reason}")
+            self.notifier.send("stopped", "nothing is ready to run: " + "; ".join(reasons[:3]), cr=self.cr.name)
             return False
         triage = [u.id for u in units.values() if u.triage]
         ui.ok(f"Every planned unit of {self.cr.name} is done."
@@ -575,10 +620,17 @@ class Kernel:
             return
         self.git.run("tag", "-a", tag, "-m", f"ralph: {self.cr.name} complete")
         ui.ok(f"Tagged {tag} (local; push it when you're ready).")
+        self.notifier.send("complete", f"{self.cr.name} is complete and tagged {tag}", cr=self.cr.name, tag=tag)
 
 
 def result_log(run_dir: Path) -> Path:
     return run_dir / "stream.jsonl"
+
+
+def _lesson_line(lesson) -> str:
+    context = [f"when {lesson.trigger.strip()}"] if lesson.trigger.strip() else []
+    context += [f"applies to {', '.join(lesson.paths)}"] if lesson.paths else []
+    return lesson.rule.strip() + (f" ({'; '.join(context)})" if context else "") + f" — from {lesson.unit}"
 
 
 def _notes_for(judgement: Judgement, evidence: Evidence, report: dict | None) -> str:

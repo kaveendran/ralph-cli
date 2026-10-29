@@ -832,6 +832,7 @@ These changes stay useful until the new harness replaces the bash loop.
 | P-1 | **Done** on branch `meta-harness`. Waits for one real unit (your go-ahead) to measure against the targets. | Dry run on the real cr2: a ~3.3k-token prompt vs ~24k tokens of files the old prompt pointed to. A real toy run: one unit done, the next left alone, peak context 34k. |
 | P0 | **Done** except the GitHub refs spike (needs a push). | §20 |
 | P1 | **Core done.** `ralph init`, `add-cr`, `start` (build, plan, `--task`, `--dry-run`), `status`, `graph`, `ready`, `unblock`, `set`, `steer`, `pause`, `resume`, `watch`, `migrate` and `doctor` run on the Python harness. `critique`, `refine-plan`, `retro` and `deploy` still run the original bash scripts. | 88 Python tests and the 148 original bash tests pass. A real run of the new harness on a toy project: two units in dependency order, each through gates and review, committed; convergence check passed; tagged. A migrated copy of the real cr2 dry-runs at ~3.6k tokens. |
+| P2 | **Done.** Memory: lessons captured from each result, matched into later packs, promoted with `memory review`, budgets checked by `memory lint` and at start, old notes summarised by `memory decay`. Skills: `skills list`, `lint`, `refresh`, `init --stack`, `eval`, and 1–3 suggestions per pack. Extras: `graph compile --analyze`, `watch --serve`, `[notify]`, review cost in the telemetry. | 127 Python tests and the 148 bash tests pass. Real calls on a toy project (§20, rows 12–14) cost $0.043 in total. |
 
 **What building P1 taught us** (each is now handled, with a test):
 - **Unprefixed cross-CR dependencies.** `[CR1 U017, U018, …]` lists several cr1 units, but only the first has the CR prefix. Unknown IDs are now informational instead of blocking forever.
@@ -841,6 +842,18 @@ These changes stay useful until the new harness replaces the bash loop.
 - **Work across attempts.** Attempt 2 sees attempt 1's files as already dirty. Each unit now tracks its own work-in-progress, so the final commit includes every attempt and your own uncommitted files are never mistaken for it.
 - **Never `git commit` without paths.** That would commit everything you had staged. The harness commits only explicit paths and refuses an empty list.
 - **Case-insensitive filesystems.** On macOS a template named `claude.md` is read as a `CLAUDE.md` memory file. Templates avoid that name.
+
+**What building P2 taught us** (each is handled, with a test):
+- **A lesson needs its trigger.** "Run make fmt" alone doesn't say when. The pack shows `rule (when <trigger>; applies to <paths>) — from U012`.
+- **Version pins must be quoted.** A YAML reader turns `pydantic: 2.10` into the float 2.1. Frontmatter values that look like numbers are written quoted.
+- **The size check misses breadth.** A unit with 2 key files and five concerns (CRUD, tax rules, PDF, email, dashboard) passes the file count. `--analyze` scored it 5 and proposed four units.
+- **Promotions stay uncommitted.** `memory review` edits `CLAUDE.md` and rules, which you own, so it leaves them for you to reword. `memory decay` changes only harness-owned notes, so it commits them.
+
+**Where P2 differs from §8–§9:**
+- **No generic shipped skills.** `exploring-codebase`, `running-tests` and `recording-results` would repeat the loop contract and the pack (which list the checks and the result format), and would use up skill-listing budget. Project skills come from `skills init` and from promotion.
+- **No `test-runner` subagent.** The harness runs the gates itself and shows only the failing tail.
+- **"Must always happen" lessons** are proposed as a rule, a `CLAUDE.md` line or a skill. Turning one into a gate or a hook stays a manual edit of `.ralph/config.toml`.
+- **"Does a skill help?"** is partial. `skills list` counts the iterations that used each skill. Comparing turns and gate failures with and without it waits for enough real runs.
 
 ---
 
@@ -860,7 +873,7 @@ These changes stay useful until the new harness replaces the bash loop.
 ---
 
 ## 20. Spike results (P0)
-These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session.
+These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session. Rows 12–14 were added while building P2.
 
 | # | Question | Result | What it changes |
 |---|---|---|---|
@@ -875,6 +888,9 @@ These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in t
 | 9 | Can git's environment configuration disable pushes for one process? | **Yes.** The push fails (exit 128), fetch still works, and a normal push is unaffected. | Add it in P1 as the second push guard ([§12.4](#124-guardrails-hooks-in-the-per-run---settings)). |
 | 10 | Does `disableBundledSkills` shrink context? (extra) | **No.** It hides 19 bundled skills and keeps project skills, but first-turn context went *up* by ~3.7k tokens. | Leave it off. |
 | 11 | Does the P-1 loop work end to end? (extra) | **Yes.** On a toy project with 2 units, the real CLI accepted every flag. Claude did exactly one unit, committed it, and left the second unit alone. Peak context was 34k tokens, cost $0.004. | P-1 is ready for a real unit. |
+| 12 | P2: can a no-tools call draft a usable skill? | **Yes.** `skills init` on a FastAPI + Pydantic toy project returned one 97-line skill through `--json-schema` in 2 turns, $0.039 (Sonnet, the default for analysis calls). It pinned `fastapi` and `pydantic` and passed `skills lint`. | Drafts still need human review; the skill marks open choices with "Decide:". |
+| 13 | P2: do project skills load under the hermetic flags, and does the stream show which one ran? | **Yes.** With `--tools Skill,Read,Grep,Glob`, the init event lists the project skill (plus the bundled ones, see row 10) and no MCP servers. Using it shows as a `tool_use` named `Skill` with `input.skill` set to its name. The eval passed: 3 turns, $0.002 on Haiku. | `skills eval` and the `skills_invoked` telemetry rely on this shape. |
+| 14 | P2: does the complexity analysis catch what the size check misses? | **Yes.** See "What building P2 taught us". Haiku, $0.0016. | `--analyze` stays advisory: it reports and changes nothing. |
 
 The raw event streams from these runs become the contract-test fixtures in P1, with paths and session IDs removed.
 

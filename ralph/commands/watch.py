@@ -1,10 +1,11 @@
-"""`ralph watch` — follow a running loop from another terminal."""
+"""`ralph watch` — follow a running loop from another terminal, or in a browser."""
 
 import time
 from pathlib import Path
 
 from ralph import ui
 from ralph.commands.common import load_project
+from ralph.monitor.dashboard import serve
 from ralph.monitor.telemetry import read_records
 from ralph.runner.stream import StreamStats, describe_tool_use
 
@@ -12,14 +13,30 @@ from ralph.runner.stream import StreamStats, describe_tool_use
 def register(subparsers) -> None:
     p = subparsers.add_parser("watch", help="follow the running loop: tool calls, context and cost as they happen")
     p.add_argument("--no-follow", action="store_true", help="show the recent iterations and exit")
+    p.add_argument("--serve", action="store_true", help="serve a live dashboard on http://127.0.0.1:<port>")
+    p.add_argument("--port", type=int, default=8765, help="dashboard port (default 8765)")
     p.set_defaults(handler=run)
+
+
+def run_dashboard(port: int) -> int:
+    project, _ = load_project()
+    server = serve(project, port)
+    ui.header("watch — dashboard", f"http://127.0.0.1:{server.server_port} (local only; Ctrl-C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
 
 
 def _record_line(record: dict) -> str:
     agent = record.get("agent") or {}
+    cost = (agent.get("total_cost_usd") or 0) + (record.get("review_cost_usd") or 0)
     return (f"  {record.get('run_id', '')} #{record.get('iteration', 0):<2} {record.get('unit', '?'):<10} "
             f"{record.get('outcome', '?'):<11} {agent.get('num_turns') or 0:>4} turns "
-            f"{(agent.get('duration_ms') or 0) / 60000:>5.1f} min ${agent.get('total_cost_usd') or 0:>6.2f} "
+            f"{(agent.get('duration_ms') or 0) / 60000:>5.1f} min ${cost:>6.2f} "
             f"peak {agent.get('peak_context') or 0:>9,}")
 
 
@@ -29,6 +46,8 @@ def _latest_stream(log_dir: Path) -> Path | None:
 
 
 def run(args) -> int:
+    if args.serve:
+        return run_dashboard(args.port)
     project, _ = load_project()
     records = read_records(project.iterations_log)
     ui.header("watch", str(project.log_dir))

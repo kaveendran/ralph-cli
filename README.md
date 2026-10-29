@@ -42,7 +42,7 @@ For a project that used the previous loop, run `ralph migrate --cr N --dry-run` 
 | Phase | What happens |
 |---|---|
 | Select | The next ready unit: one in progress first, then the plan's build order. A blocked unit only holds back the units that depend on it. |
-| Prepare | A **context pack** with only the unit's own plan entry, the spec sections it cites, its dependencies' handoff notes, its last failure, your `ralph steer` notes and the checks it must pass. A few thousand tokens, however big the project gets. |
+| Prepare | A **context pack** with only the unit's own plan entry, the spec sections it cites, its dependencies' handoff notes, its last failure, your `ralph steer` notes, the checks it must pass, up to 5 unreviewed lessons that match its files, and 1–3 project skills that fit it. A few thousand tokens, however big the project gets. |
 | Run | One `claude -p` session, **hermetic** (only the project's MCP servers and settings, no auto memory) and **bounded** (turns, budget, time, compaction at 200k tokens). Guardrail hooks stop the agent from committing, pushing or editing harness state. An `explorer` subagent handles codebase searches. |
 | Verify | The harness runs the gates itself. An integrity check fails deleted tests, skip markers and frozen paths. For P0 and Large units, a separate read-only reviewer checks the tests against the acceptance criteria. |
 | Commit | Only the files the unit changed, across all its attempts. Your own uncommitted work is never swept in. After 3 failed attempts the unit is blocked, and its work is saved under `refs/ralph/rejected/`. |
@@ -61,11 +61,18 @@ When every unit is done, a convergence check compares the implementation with th
 | `ralph start --dry-run` | The next unit's context pack and its size, and the exact command. Runs nothing |
 | `ralph status` | Progress, what runs next, blocked and triage units, per-unit time, cost and context. `--write` generates `PROGRESS.md` |
 | `ralph graph` / `ralph ready` | The units and their dependencies (`--mermaid`, `--json`) / what can start now |
-| `ralph graph compile` | Plan → units, after you edit the plan. Rejects units with more than 8 key files unless `--allow-large` |
+| `ralph graph compile` | Plan → units, after you edit the plan. Rejects units with more than 8 key files unless `--allow-large`. `--analyze` also has Claude score each open unit's complexity (1–5) and propose splits for the hard ones (one read-only call, a few cents) |
 | `ralph unblock ID` / `ralph set ID …` | Change a unit by hand; `set ID --status todo` accepts a triage unit |
 | `ralph steer "…"` | A note for the next unit pack, without stopping the loop. `--hard "<cmd>"` adds a check every unit must pass |
 | `ralph pause` / `ralph resume` | Let the current iteration finish, then wait |
-| `ralph watch` | Follow the running loop: tool calls, context, cost |
+| `ralph watch` | Follow the running loop: tool calls, context, cost. `--serve [--port 8765]` shows the same in a browser, on 127.0.0.1 only |
+| `ralph memory lint` | Size budgets for `CLAUDE.md`, `AGENTS.md`, rules, skills and unit notes (`--strict` for CI). Also checked at start |
+| `ralph memory review` | Walk the lessons the agent reported, most-recurring first, and promote each one you approve: to a path-scoped rule, `CLAUDE.md`, or a skill. Leaves the edits uncommitted so you can reword them |
+| `ralph memory decay` | Summarise the notes of units finished long ago (the full text moves to `archive/`) and move reviewed lessons out of the inbox |
+| `ralph skills list` / `lint` | The project's skills and how often the loop used them / a check against Anthropic's skill authoring guidance |
+| `ralph skills init --stack "…"` | Draft starter skills for your stack from your dependency versions (one call with no tools). You review them |
+| `ralph skills refresh` | Flag skills and `docs/vendor/<lib>@<version>/` folders written for versions you no longer use |
+| `ralph skills eval [name]` | Run each skill's scenarios (`.claude/skills/<name>/evals/*.json`) through Claude: did it use the skill, and does the answer contain what it should? |
 | `ralph migrate --cr N` | Move a CR from the previous loop (keeps its statuses and notes) |
 | `ralph doctor [--live]` | Check the setup; `--live` makes one tiny real call (about a cent) |
 | `ralph critique`, `refine-plan`, `retro`, `deploy` | Plan review and delivery workflows (still the original bash scripts) |
@@ -95,13 +102,26 @@ api = "bash scripts/test-api.sh"
 [verify.by_type]
 default = ["unit"]
 api = ["unit", "api"]
+
+[memory]                   # size budgets, in lines (the defaults)
+claude_md_lines = 200
+rule_lines = 50
+skill_lines = 500
+learnings_in_pack = 5
+
+[notify]                   # best-effort; a failure never changes what the loop does
+# webhook = "https://hooks.slack.com/services/…"   # gets a JSON POST with a `text` field
+# command = "terminal-notifier -message 'ralph needs you'"   # gets the event as JSON on stdin
+events = ["blocked", "stopped", "complete", "usage_limit"]
 ```
 
 ## Project layout
 
 ```
 .ralph/config.toml                     committed: harness settings
-.ralph/learnings/inbox.jsonl           committed: lessons the agent reported
+.ralph/learnings/inbox.jsonl           committed: lessons the agent reported (reviewed ones move to archive.jsonl)
+.claude/skills/<name>/SKILL.md         committed: project skills (`ralph-versions:` records what they were written for)
+.claude/rules/<area>.md                committed: path-scoped rules, e.g. promoted lessons
 development/<cr>/spec/spec.md          you write it
 development/<cr>/plan/…-plan.md        plan mode writes it; you review it
 development/<cr>/units/U012.json       unit state, written only by the harness

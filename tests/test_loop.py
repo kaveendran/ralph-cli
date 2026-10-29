@@ -5,6 +5,8 @@ what the "agent" does on each run, and checks what the harness did: unit
 state, commits, saved work and the iteration log.
 """
 
+import contextlib
+import io
 import json
 import os
 import unittest
@@ -220,6 +222,54 @@ class Preflight(LoopTestCase):
         kernel.run()
         self.assertIn("use the existing helper", runner.calls[0].prompt)
         self.assertNotIn("use the existing helper", runner.calls[1].prompt)
+
+
+class MemoryAndSkills(LoopTestCase):
+    def write_skill(self, name: str, frontmatter: str) -> None:
+        folder = self.root / ".claude" / "skills" / name
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(f"---\nname: {name}\n{frontmatter}---\n# {name}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", f"skill {name}")
+
+    def test_lessons_are_committed_with_the_unit_and_reach_later_packs(self):
+        lesson = {"trigger": "gates failed on formatting", "rule": "Run make fmt before finishing", "paths": []}
+        kernel, runner = self.kernel(done_step("U001", {"a.py": "a\n"}, learnings=[lesson]),
+                                     done_step("U002", {"b.py": "b\n"}))
+        kernel.run()
+        (saved,) = [json.loads(line) for line in self.project.learnings_inbox.read_text().splitlines()]
+        self.assertEqual((saved["unit"], saved["rule"]), ("U001", "Run make fmt before finishing"))
+        self.assertIn(".ralph/learnings/inbox.jsonl", self.committed_files("HEAD~1"))
+        self.assertNotIn("Run make fmt", runner.calls[0].prompt)
+        self.assertIn("- Run make fmt before finishing (when gates failed on formatting) — from U001",
+                      runner.calls[1].prompt)
+
+    def test_a_skill_for_the_units_files_is_suggested_in_its_pack(self):
+        self.store.save(Unit("U001", "First", "cr1", order=1, key_files=["backend/api.py"]))
+        self.write_skill("api-conventions", "description: Writes endpoints.\npaths: [backend/**]\n")
+        kernel, runner = self.kernel(done_step("U001", {"backend/api.py": "a\n"}), max_iterations=1)
+        kernel.run()
+        self.assertIn("- `api-conventions`: its paths match this unit's files", runner.calls[0].prompt)
+
+    def test_a_blocked_unit_and_the_stop_that_follows_are_notified(self):
+        events = self.tmp / "events.jsonl"
+        self.config.notify.command = f"cat >> '{events}'; echo >> '{events}'"
+        kernel, _ = self.kernel(report_step("U001", "blocked", blocker="needs an API key"))
+        kernel.run()
+        sent = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
+        self.assertEqual([e["event"] for e in sent], ["blocked", "stopped"])
+        self.assertIn("needs an API key", sent[0]["text"])
+        self.assertIn("U002", sent[1]["text"])          # why nothing else can run
+
+    def test_preflight_warns_about_a_stale_skill_but_runs(self):
+        (self.root / "requirements.txt").write_text("fastapi==0.116.1\n")
+        self.write_skill("api", 'description: Writes endpoints.\nralph-versions:\n  fastapi: "0.115"\n')
+        kernel, _ = self.kernel(done_step("U001", {"a.py": "a\n"}), max_iterations=1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertIn("Skill 'api' was written for fastapi 0.115, but requirements.txt has 0.116.1", out.getvalue())
+        self.assertEqual(self.units()["U001"].status, Status.DONE)
 
 
 if __name__ == "__main__":
