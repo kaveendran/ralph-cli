@@ -14,7 +14,15 @@
 #   deploy        Deployment workflow (scaffold | critique | refine)
 #   help          Show this help
 
-RALPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the package dir, following symlinks (e.g. /usr/local/bin/ralph).
+# Kept bash-3.2 compatible for stock macOS bash.
+RALPH_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$RALPH_SOURCE" ]; do
+  RALPH_LINK_DIR="$(cd -P "$(dirname "$RALPH_SOURCE")" && pwd)"
+  RALPH_SOURCE="$(readlink "$RALPH_SOURCE")"
+  [ "${RALPH_SOURCE#/}" = "$RALPH_SOURCE" ] && RALPH_SOURCE="$RALPH_LINK_DIR/$RALPH_SOURCE"
+done
+RALPH_DIR="$(cd -P "$(dirname "$RALPH_SOURCE")" && pwd)"
 
 usage() {
   echo ""
