@@ -53,6 +53,8 @@ class Unit:
     wip_overlap: list[str] = field(default_factory=list)
     # Teammates' ledger entries the agent has dealt with, so they leave the pack.
     acknowledged_impacts: list[str] = field(default_factory=list)
+    # Set when runs show the unit doesn't fit one session (compactions, a large context).
+    size_warning: str = ""
 
     def to_json(self) -> dict:
         data = asdict(self)

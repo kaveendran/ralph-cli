@@ -70,6 +70,12 @@ def run(args) -> int:
         for unit in blocked:
             ui.info(f"  {unit.id} {unit.title}: {unit.blocker}")
         ui.info(f"  After fixing the cause: ralph unblock <ID>")
+    oversized = [u for u in units.values() if u.size_warning and u.status is not Status.DONE]
+    if oversized:
+        ui.section("Probably too big for one session")
+        for unit in oversized:
+            ui.info(f"  {unit.id} {unit.title}: its runs {unit.size_warning}")
+        ui.info("  Split them in the plan, then 'ralph graph compile' ('--analyze' suggests splits)")
     if triage:
         ui.section("Found during other units (waiting for triage)")
         for unit in triage:

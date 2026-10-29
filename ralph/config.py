@@ -23,7 +23,10 @@ class RunnerConfig:
     compact_window: int = 200_000
     setting_sources: str = "project,local"
     hermetic: bool = True
-    permissions: str = "bypass"         # bypass | strict
+    permissions: str = "bypass"         # bypass | container | strict | sandbox (docs/meta-harness-plan.md §12.5)
+    allow: list[str] = field(default_factory=list)              # strict: extra allow rules, e.g. "Bash(npm test *)"
+    sandbox_domains: list[str] = field(default_factory=list)    # sandbox: hosts the agent's commands may reach
+    sandbox_excluded: list[str] = field(default_factory=list)   # sandbox: commands run outside it, e.g. "docker compose *"
     claude_version: str = ""            # pin, e.g. "2.1.311"; empty means don't check
 
 
@@ -49,6 +52,7 @@ class LoopConfig:
     protect_branches: list[str] = field(default_factory=list)  # empty: the remote's default branch
     tag_format: str = "{cr}-done"       # local tag when a CR converges; "" turns tagging off
     converge: bool = True               # check the finished CR against the spec's acceptance criteria
+    max_cost_usd: float = 0.0           # stop the run once it has spent this much (0: no limit)
 
 
 @dataclass

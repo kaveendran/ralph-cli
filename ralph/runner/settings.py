@@ -49,8 +49,9 @@ def project_mcp_config(root: Path, run_dir: Path) -> Path:
     return empty
 
 
-def write_run_settings(root: Path, run_dir: Path, frozen: list[str]) -> Path:
-    """Write settings.json (the hook) and policy.json (what it guards); return settings.json."""
+def write_run_settings(root: Path, run_dir: Path, frozen: list[str], sandbox: dict | None = None) -> Path:
+    """Write settings.json (the hook, and the sandbox when asked for) and policy.json
+    (what the hook guards); return settings.json."""
     policy_path = run_dir / "policy.json"
     write_text_atomic(policy_path, json.dumps({"root": str(root), "frozen": frozen}, indent=2) + "\n")
     command = (f"PYTHONPATH={shlex.quote(str(PACKAGE_DIR.parent))} {shlex.quote(sys.executable)} -P "
@@ -60,6 +61,8 @@ def write_run_settings(root: Path, run_dir: Path, frozen: list[str]) -> Path:
         {"matcher": "Bash", "hooks": [hook]},
         {"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [hook]},
     ]}}
+    if sandbox:
+        settings["sandbox"] = sandbox
     settings_path = run_dir / "settings.json"
     write_text_atomic(settings_path, json.dumps(settings, indent=2) + "\n")
     return settings_path

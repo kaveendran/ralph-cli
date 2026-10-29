@@ -126,5 +126,20 @@ class Commands(TempDirTestCase):
         self.assertEqual(self.ralph("skills", "eval", "nope")[0], 1)
 
 
+    def test_add_unit_gets_a_clash_free_id_and_runs_after_its_dependencies(self):
+        self.ralph("graph", "compile", "--cr", "2", "--allow-large")
+        code, output = self.ralph("add-unit", "Export as CSV", "--cr", "2", "--depends-on", "U002",
+                                  "--key-file", "backend/export.py", "--description", "GET /export returns CSV.")
+        self.assertEqual(code, 0, output)
+        units = UnitStore(self.project.cr("cr2").units_dir).load()
+        (added,) = [u for u in units.values() if u.title == "Export as CSV"]
+        self.assertRegex(added.id, r"^U004-[0-9a-f]{4}$")
+        self.assertEqual((added.depends_on, added.order), (["U002"], units["U002"].order + 1))
+        self.assertIn(f"ralph: add {added.id} Export as CSV", git(self.root, "log", "-1", "--format=%s"))
+        code, output = self.ralph("add-unit", "Nope", "--cr", "2", "--depends-on", "U999")
+        self.assertEqual(code, 1)
+        self.assertIn("U999 isn't a unit of cr2", output)
+
+
 if __name__ == "__main__":
     unittest.main()

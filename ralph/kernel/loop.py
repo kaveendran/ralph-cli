@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ralph import ui
 from ralph.config import Config
-from ralph.context.pack import Pack, PackInputs, build_pack
+from ralph.context.pack import Pack, PackInputs, build_pack, format_checks
 from ralph.errors import RalphError
 from ralph.fsutil import read_text, write_text_atomic
 from ralph.graph.compile import discovered_unit_id
@@ -32,11 +32,11 @@ from ralph.model.store import UnitStore
 from ralph.model.unit import Status, Unit
 from ralph.monitor.notify import Notifier
 from ralph.monitor.otel import otel_env
-from ralph.monitor.signals import SignalMonitor
-from ralph.monitor.telemetry import IterationRecord, append_record, now_iso
+from ralph.monitor.signals import SignalMonitor, Thresholds
+from ralph.monitor.telemetry import IterationRecord, append_record, now_iso, read_records, unit_totals
 from ralph.paths import ProjectPaths
 from ralph.prompts import render, schema
-from ralph.runner import compat
+from ralph.runner import compat, permissions
 from ralph.runner.base import AgentCall, AgentResult, Runner
 from ralph.runner.settings import agent_env, project_mcp_config, write_agents_file, write_run_settings
 from ralph.runner.stream import describe_tool_use
@@ -51,12 +51,15 @@ from ralph.vcs import commit as vcs
 from ralph.vcs.commit import RunChanges, Snapshot
 from ralph.vcs.git import Git
 from ralph.verify import gates as gate_runner
+from ralph.verify.gates import GateResult
 from ralph.verify.integrity import check_changes
 from ralph.verify.review import REVIEW_TOOLS, review_prompt, run_review, should_review
 
 # pytest and unittest exit 5 when they find no tests: normal before the first
 # unit of a new project (it only excuses the baseline, never a unit's gates).
 NO_TESTS_COLLECTED = 5
+HEALTH_TIMEOUT_S = 5 * 60          # the health check is meant to be quick
+MAX_REPAIRS = 2                    # failed repair tasks in a row before the loop stops
 
 
 @dataclass
@@ -72,6 +75,7 @@ class StartOptions:
     gates_advisory: bool = False
     allow_version_drift: bool = False
     review: str | None = None            # overrides verify.review for this run
+    run_budget_usd: float | None = None  # overrides loop.max_cost_usd for this run
 
 
 class Kernel:
@@ -86,7 +90,9 @@ class Kernel:
         self.run_dir = project.log_dir / self.run_id
         self.developer = self.git.run("config", "user.name", check=False).stdout.strip()
         self.email = self.git.run("config", "user.email", check=False).stdout.strip()
-        self.failures = self.invalid_results = self.stalls = 0
+        self.failures = self.invalid_results = self.stalls = self.repairs = 0
+        self.spent_usd = 0.0
+        self.done_units: set[str] | None = None
         self.converged_once = False
         self._plan_cache: tuple[float, Plan | None] | None = None
         self._spec_cache: dict[str, Spec | None] = {}
@@ -102,7 +108,16 @@ class Kernel:
             while not (self.options.max_iterations and iteration >= self.options.max_iterations):
                 self.control.wait_while_paused(
                     on_wait=lambda: ui.info("  Paused after the last iteration. Run 'ralph resume' to continue."))
+                broken = self.health_check(iteration)
+                if broken is not None:
+                    repaired = self.repair(iteration, broken)
+                    iteration += 1
+                    if repaired:
+                        continue
+                    break
                 units = self.store.load()
+                if self.regressed(units):
+                    break
                 unit = self.select(units)
                 if unit is None:
                     if self.finish(units):
@@ -110,7 +125,7 @@ class Kernel:
                     break
                 stop = self.iterate(iteration, unit, units)
                 iteration += 1
-                if stop:
+                if stop or self.over_budget():
                     break
             if self.options.max_iterations and iteration >= self.options.max_iterations:
                 ui.info(f"\n  Reached --max {self.options.max_iterations}.")
@@ -150,9 +165,7 @@ class Kernel:
         runner_config = self.config.runner
         if not self.git.is_repo():
             raise RalphError(f"{self.root} isn't a git repository.", "Run 'git init' first.")
-        if runner_config.permissions != "bypass":
-            raise RalphError(f"runner.permissions = '{runner_config.permissions}' isn't supported yet.",
-                             "Use 'bypass' (with guardrail hooks), ideally inside a container.")
+        permissions.check(runner_config)
         compat.find_claude()
         version = compat.check_version(runner_config.claude_version, allow_drift=self.options.allow_version_drift)
         self._check_branch()
@@ -169,7 +182,10 @@ class Kernel:
         ui.info(f"  Per iteration: max {self.options.max_turns or runner_config.max_turns} turns, "
                 f"max ${self.options.max_budget_usd or runner_config.max_budget_usd:g}, "
                 f"{runner_config.timeout_minutes} min, compaction at {runner_config.compact_window:,} tokens")
-        ui.info(f"  Hermetic: {'on' if runner_config.hermetic else 'off'} · pushes: never (sync is manual)")
+        ui.info(f"  Hermetic: {'on' if runner_config.hermetic else 'off'} · permissions: {runner_config.permissions} "
+                f"· pushes: never (sync is manual)")
+        if runner_config.permissions == "bypass" and not self.options.max_iterations:
+            ui.info("  (An unattended run is safer with runner.permissions = 'container' or 'sandbox'.)")
         self._team_status()
         self._memory_and_skill_checks()
         if not self.config.verify.gates:
@@ -241,6 +257,78 @@ class Kernel:
                              f"{failed.exit_code}). Log: {failed.log_path}",
                              "Fix the tree first, or pass --gates-advisory to run anyway, or --skip-baseline.")
 
+    # ── Health: a broken tree is fixed before the next unit ──────────────────
+
+    def health_check(self, iteration: int) -> GateResult | None:
+        """Run `[verify] health`; return the failure, or None when it passes (or isn't set)."""
+        command = self.config.verify.health
+        if not command:
+            return None
+        (result,) = gate_runner.run_gates([("health", command)], self.root,
+                                          self.run_dir / f"{iteration:02d}-health.log", HEALTH_TIMEOUT_S)
+        return None if result.passed else result
+
+    def repair(self, iteration: int, broken: GateResult) -> bool:
+        """Make fixing the tree the next task. Gives up after MAX_REPAIRS tries in a row."""
+        self.repairs += 1
+        if self.repairs > MAX_REPAIRS:
+            reason = f"the health check still fails after {MAX_REPAIRS} repair attempts ({broken.command})"
+            ui.error("Stopping: " + reason, f"Log: {broken.log_path}")
+            self.notifier.send("stopped", reason, cr=self.cr.name)
+            return False
+        ui.warn(f"The health check fails (exit {broken.exit_code}), so repairing the tree comes first.")
+        text = (f"The project's health check fails, so no unit can be trusted until it passes again.\n\n"
+                f"Command: `{broken.command}` (exit {broken.exit_code})\n\nThe end of its output:\n\n"
+                f"```\n{broken.tail.strip()}\n```\n\nFind the cause and fix it. Don't change the check itself.")
+        fixed = self.run_task("Repair the failing health check", text, self.run_dir / f"{iteration:02d}-repair",
+                              iteration=iteration, extra_checks=[("health", broken.command)])
+        if fixed:
+            self.repairs = 0
+        return True
+
+    # ── Work outside the plan: `--task`, and health repairs ──────────────────
+
+    def run_task(self, title: str, text: str, run_dir: Path, iteration: int = 0,
+                 extra_checks: list[tuple[str, str]] = ()) -> bool:
+        """One bounded iteration on a task, verified like a unit. Returns True if it was committed."""
+        checks = self.checks_for(None) + list(extra_checks)
+        prompt = render("task.md", TASK_TITLE=title, TASK=text.strip(), INSTRUCTIONS=self.rules() or
+                        "None beyond the loop contract.", CHECKS=format_checks(checks),
+                        BRANCH=self.git.branch(), HEAD=self.git.head()[:12])
+        write_text_atomic(run_dir / "pack.md", prompt)
+        task_unit = Unit(id="task", title=title, cr=self.cr.name)
+        snapshot = vcs.take_snapshot(self.git)
+        ui.section(f"Task · {title}")
+        result = self.run_agent(self.agent_call(prompt, run_dir, "unit-result.json"))
+        vcs.undo_agent_commits(self.git, snapshot)
+        changes = vcs.run_changes(self.git, snapshot)
+        report = result.structured or {}
+
+        problems = []
+        if result.failed or result.usage_limited:
+            problems.append(f"the run failed ({result.subtype or 'no result'})")
+        elif report.get("status") != "done":
+            problems.append(f"the agent reported '{report.get('status', 'no result')}': {report.get('blocker', '')}")
+        integrity = check_changes(vcs.changed_entries(self.git, changes.paths),
+                                  vcs.diff_text(self.git, changes.paths), self.config.verify.frozen)
+        problems += integrity.failures
+        if not problems:
+            gate_results = gate_runner.run_gates(checks, self.root, run_dir / "gates.log",
+                                                 self.config.verify.gate_timeout_minutes * 60)
+            problems += [f"check `{g.name}` failed (exit {g.exit_code})" for g in gate_results if not g.passed]
+
+        commit = ""
+        if not problems:
+            entry = [str(p.relative_to(self.root)) for p in self.write_ledger(task_unit, report, changes.paths)]
+            commit = vcs.commit_paths(self.git, changes.paths + entry, f"task: {title}\n\n"
+                                      f"{report.get('summary', '').strip()}\n\nGenerated-by: ralph (Claude Code)")
+            ui.ok(f"Task done{' and committed (' + commit[:10] + ')' if commit else ' (nothing to commit)'}.")
+        else:
+            ui.warn("Task not accepted: " + "; ".join(problems) + ". Its changes are left in the working tree.")
+        self.record(iteration, task_unit, "done" if not problems else "not_done", result, snapshot, run_dir,
+                    commit=commit, changed=len(changes.paths), notes="; ".join(problems))
+        return not problems
+
     # ── 2. Select ────────────────────────────────────────────────────────────
 
     def select(self, units: dict[str, Unit]) -> Unit | None:
@@ -290,11 +378,17 @@ class Kernel:
         skills = suggest_skills(self._skills(), unit, self._unit_text(unit))
         return build_pack(PackInputs(
             unit=unit, units=units, plan=self._plan(), specs=self._specs(unit),
-            instructions=read_text(self.cr.instructions), last_attempt=self.store.recent_notes(unit.id),
+            instructions=self.rules(), last_attempt=self.store.recent_notes(unit.id),
             steering=steering, team_changes=team_changes, checks=self.checks_for(unit),
             branch=self.git.branch(), head=self.git.head(),
             lessons=[_lesson_line(lesson) for lesson in lessons],
             skills=[(skill.name, why) for skill, why in skills]))
+
+    def rules(self) -> str:
+        """The project's principles and the CR's instructions, verbatim: the builder
+        gets them in its pack, and the reviewer fails a unit that breaks one."""
+        return "\n\n".join(text.strip() for text in (read_text(self.project.constitution),
+                                                      read_text(self.cr.instructions)) if text.strip())
 
     def _skills(self):
         if self._skill_cache is None:
@@ -308,6 +402,8 @@ class Kernel:
 
     def agent_call(self, prompt: str, run_dir: Path, schema_name: str) -> AgentCall:
         runner_config = self.config.runner
+        checks = list(self.config.verify.gates.values()) + self.control.checks() + [self.config.verify.health]
+        allowed = permissions.posture(runner_config, checks)
         return AgentCall(
             prompt=prompt, cwd=self.root, model=self.options.model or runner_config.model_build,
             log_path=run_dir / "stream.jsonl",
@@ -315,9 +411,11 @@ class Kernel:
             max_budget_usd=self.options.max_budget_usd or runner_config.max_budget_usd,
             timeout_seconds=runner_config.timeout_minutes * 60,
             silence_seconds=runner_config.silence_minutes * 60,
-            system_append=render("contract.md"), json_schema=schema(schema_name),
-            skip_permissions=True,
-            settings_file=write_run_settings(self.root, run_dir, self.config.verify.frozen),
+            system_append="\n\n".join(filter(None, [render("contract.md"), permissions.note(runner_config)])),
+            json_schema=schema(schema_name),
+            skip_permissions=allowed.skip_permissions, permission_mode=allowed.mode,
+            allowed_tools=allowed.allowed_tools,
+            settings_file=write_run_settings(self.root, run_dir, self.config.verify.frozen, allowed.sandbox),
             agents_file=write_agents_file(run_dir),
             hermetic=runner_config.hermetic,
             mcp_config=project_mcp_config(self.root, run_dir) if runner_config.hermetic else None,
@@ -394,9 +492,27 @@ class Kernel:
         commit = self.apply(unit, units, report, judgement, evidence, changes)
         self.record(iteration, unit, judgement.verdict.value, result, snapshot, run_dir,
                     evidence=evidence, commit=commit, changed=len(changes.paths), notes=judgement.reason)
+        self._size_check(unit)
         # A capped or harness-stopped run has no result by design; only count real omissions.
         expected_result = not (result.capped or result.stopped_by)
         return self.decide(judgement, report is not None or not expected_result, changes)
+
+    def _size_check(self, unit: Unit) -> None:
+        """Mark a unit whose runs compacted twice or ran past the context warning: it
+        probably doesn't fit one session, and the next plan revision should split it."""
+        if unit.size_warning:
+            return
+        spent = unit_totals(read_records(self.project.iterations_log), self.cr.name).get(unit.id, {})
+        if spent.get("compactions", 0) >= 2:
+            unit.size_warning = f"compacted {spent['compactions']} times"
+        elif spent.get("peak_context", 0) > Thresholds().context_warn:
+            unit.size_warning = f"peaked at {spent['peak_context']:,} tokens of context"
+        else:
+            return
+        self.store.save(unit)
+        self.store.append_note(unit.id, "Too big for one session?", f"Its runs {unit.size_warning}. Consider "
+                               "splitting it in the plan (`ralph graph compile --analyze` suggests how).")
+        ui.warn(f"{unit.id} {unit.size_warning}: it's probably too big for one session; consider splitting it.")
 
     def _agent_failed(self, iteration, unit, result, snapshot, run_dir) -> bool:
         self.failures += 1
@@ -456,7 +572,7 @@ class Kernel:
             plan_unit = plan.unit(unit.id) if plan else None
             prompt = review_prompt(
                 unit_section=plan_unit.section if plan_unit else unit.description or unit.title,
-                rules=read_text(self.cr.instructions), changed_files=paths,
+                rules=self.rules(), changed_files=paths,
                 diff=vcs.diff_text(self.git, paths), integrity_flags=evidence.integrity.flags)
             evidence.review = run_review(self.runner, self.analysis_call(prompt, run_dir / "review",
                                                                          "review-result.json", max_turns=40))
@@ -468,6 +584,7 @@ class Kernel:
         """A read-only call (review, convergence): same hermetic setup, no write tools, no contract."""
         call = self.agent_call(prompt, run_dir, schema_name)
         call.tools, call.skip_permissions, call.system_append = list(REVIEW_TOOLS), False, ""
+        call.permission_mode, call.allowed_tools = "", []        # read-only tools need no approval
         call.max_turns, call.max_budget_usd, call.agents_file = max_turns, min(call.max_budget_usd, 5.0), None
         return call
 
@@ -583,6 +700,7 @@ class Kernel:
             integrity_failures=evidence.integrity.failures if evidence and evidence.integrity else [],
             changed_files=changed, commit=commit, run_dir=str(run_dir.relative_to(self.root)), notes=notes)
         append_record(self.project.iterations_log, record)
+        self.spent_usd += (summary.get("total_cost_usd") or 0) + record.review_cost_usd
         minutes = (summary.get("duration_ms") or 0) / 60000
         ui.info(f"  {unit.id} · {outcome} · {summary.get('num_turns') or 0} turns · {minutes:.1f} min · "
                 f"${summary.get('total_cost_usd') or 0:.2f} · peak context {summary.get('peak_context', 0):,} "
@@ -607,6 +725,29 @@ class Kernel:
             ui.error("Stopping: " + reason)
             self.notifier.send("stopped", reason, cr=self.cr.name)
         return bool(reason)
+
+    def regressed(self, units: dict[str, Unit]) -> bool:
+        """Stop if units that were done aren't any more (an edit, a bad merge, a reset).
+        It compares which units are done, not how many: one finishing can't hide another undone."""
+        done = {u.id for u in units.values() if u.status is Status.DONE}
+        before, self.done_units = self.done_units, done
+        lost = sorted(before - done) if before is not None else []
+        if not lost:
+            return False
+        one = len(lost) == 1
+        reason = f"{', '.join(lost)} {'was' if one else 'were'} done and {'isn' if one else 'aren'}'t any more"
+        ui.error("Stopping: " + reason, "If you changed them on purpose, start the loop again.")
+        self.notifier.send("stopped", reason, cr=self.cr.name)
+        return True
+
+    def over_budget(self) -> bool:
+        limit = self.options.run_budget_usd or self.config.loop.max_cost_usd
+        if not limit or self.spent_usd < limit:
+            return False
+        reason = f"this run has spent ${self.spent_usd:.2f}, over its ${limit:g} budget"
+        ui.error("Stopping: " + reason, "Raise loop.max_cost_usd or pass --run-budget to go on.")
+        self.notifier.send("stopped", reason, cr=self.cr.name)
+        return True
 
     # ── When nothing is ready ────────────────────────────────────────────────
 

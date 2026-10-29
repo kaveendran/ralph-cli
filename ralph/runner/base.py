@@ -22,6 +22,8 @@ class AgentCall:
     json_schema: dict | None = None      # structured result
     tools: list[str] | None = None       # None: the default tools; []: no tools at all
     skip_permissions: bool = False
+    permission_mode: str = ""            # e.g. "dontAsk" or "acceptEdits", when not skipping permissions
+    allowed_tools: list[str] = field(default_factory=list)      # allow rules, e.g. "Bash(pytest *)"
     settings_file: Path | None = None    # per-run settings: guardrail hooks
     agents_file: Path | None = None      # subagent definitions (the explorer)
     hermetic: bool = True

@@ -11,19 +11,15 @@ from pathlib import Path
 
 from ralph import ui
 from ralph.errors import RalphError
-from ralph.fsutil import read_text, write_text_atomic
+from ralph.fsutil import read_text
 from ralph.graph.compile import compile_plan
 from ralph.graph.schedule import why_nothing_is_ready
-from ralph.context.pack import format_checks
 from ralph.kernel.lock import RunLock
 from ralph.kernel.loop import Kernel
 from ralph.model.plan import parse_plan
-from ralph.model.unit import Unit
-from ralph.prompts import render, render_template
+from ralph.prompts import render_template
 from ralph.runner.cli_backend import build_command, describe_command
 from ralph.vcs import commit as vcs
-from ralph.verify import gates as gate_runner
-from ralph.verify.integrity import check_changes
 
 
 def run_plan(kernel: Kernel, implementation_type: str = "feature") -> int:
@@ -80,46 +76,7 @@ def run_task(kernel: Kernel, title: str, text: str) -> int:
     """One bounded iteration on work outside the plan."""
     with RunLock(kernel.project.lock):
         kernel.preflight(need_units=False)
-        prompt = render("task.md", TASK_TITLE=title, TASK=text.strip(),
-                        INSTRUCTIONS=read_text(kernel.cr.instructions).strip() or "None beyond the loop contract.",
-                        CHECKS=format_checks(kernel.checks_for(None)),
-                        BRANCH=kernel.git.branch(), HEAD=kernel.git.head()[:12])
-        run_dir = kernel.run_dir / "task"
-        write_text_atomic(run_dir / "pack.md", prompt)
-        task_unit = Unit(id="task", title=title, cr=kernel.cr.name)
-        snapshot = vcs.take_snapshot(kernel.git)
-        ui.section(f"Task · {title}")
-        result = kernel.run_agent(kernel.agent_call(prompt, run_dir, "unit-result.json"))
-        vcs.undo_agent_commits(kernel.git, snapshot)
-        changes = vcs.run_changes(kernel.git, snapshot)
-        report = result.structured or {}
-
-        problems = []
-        if result.failed or result.usage_limited:
-            problems.append(f"the run failed ({result.subtype or 'no result'})")
-        elif report.get("status") != "done":
-            problems.append(f"the agent reported '{report.get('status', 'no result')}': {report.get('blocker', '')}")
-        integrity = check_changes(vcs.changed_entries(kernel.git, changes.paths),
-                                  vcs.diff_text(kernel.git, changes.paths), kernel.config.verify.frozen)
-        problems += integrity.failures
-        gate_results = []
-        if not problems:
-            gates = gate_runner.select_gates(kernel.config.verify, None)
-            gate_results = gate_runner.run_gates(gates, kernel.root, run_dir / "gates.log",
-                                                 kernel.config.verify.gate_timeout_minutes * 60)
-            problems += [f"gate `{g.name}` failed (exit {g.exit_code})" for g in gate_results if not g.passed]
-
-        commit = ""
-        if not problems:
-            entry = [str(p.relative_to(kernel.root)) for p in kernel.write_ledger(task_unit, report, changes.paths)]
-            commit = vcs.commit_paths(kernel.git, changes.paths + entry,
-                                      f"task: {title}\n\n{report.get('summary', '').strip()}\n\nGenerated-by: ralph (Claude Code)")
-            ui.ok(f"Task done{' and committed (' + commit[:10] + ')' if commit else ' (nothing to commit)'}.")
-        else:
-            ui.warn("Task not accepted: " + "; ".join(problems) + ". Its changes are left in the working tree.")
-        kernel.record(0, task_unit, "done" if not problems else "not_done", result, snapshot, run_dir,
-                      commit=commit, changed=len(changes.paths), notes="; ".join(problems))
-        return 0 if not problems else 1
+        return 0 if kernel.run_task(title, text, kernel.run_dir / "task") else 1
 
 
 def dry_run(kernel: Kernel) -> int:

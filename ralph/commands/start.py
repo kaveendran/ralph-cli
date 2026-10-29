@@ -23,6 +23,8 @@ def register(subparsers) -> None:
     p.add_argument("--model", default="", help="Claude model (default: sonnet for build, opus for plan)")
     p.add_argument("--max-turns", type=int, metavar="N", help="turn cap per iteration")
     p.add_argument("--max-budget", type=float, metavar="USD", help="spend cap per iteration")
+    p.add_argument("--run-budget", type=float, metavar="USD",
+                   help="stop the loop once this run has spent this much in total (default: loop.max_cost_usd)")
     p.add_argument("--review", choices=("off", "p0-and-large", "all"), help="which units get the per-unit review")
     p.add_argument("--dry-run", action="store_true", help="show the next unit's context pack and command; run nothing")
     p.add_argument("--allow-main", action="store_true", help="allow running on the default branch")
@@ -46,7 +48,8 @@ def run(args) -> int:
     options = StartOptions(cr=cr_name, max_iterations=args.max, model=args.model, max_turns=args.max_turns,
                            max_budget_usd=args.max_budget, only_units=args.unit, allow_main=args.allow_main,
                            skip_baseline=args.skip_baseline, gates_advisory=args.gates_advisory,
-                           allow_version_drift=args.allow_version_drift, review=args.review)
+                           allow_version_drift=args.allow_version_drift, review=args.review,
+                           run_budget_usd=args.run_budget)
     kernel = Kernel(project, config, CliRunner(), options)
 
     if args.mode == "plan":

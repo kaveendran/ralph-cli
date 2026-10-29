@@ -74,7 +74,7 @@ ralph sync push         # review what would be published, then push
 | Command | What it does |
 |---|---|
 | `ralph init` / `ralph add-cr` | Set up a project / a change request |
-| `ralph start --cr N` | The build loop. `--max N`, `--unit ID`, `--model`, `--max-turns`, `--max-budget`, `--review off\|p0-and-large\|all` |
+| `ralph start --cr N` | The build loop. `--max N`, `--unit ID`, `--model`, `--max-turns`, `--max-budget` (per iteration), `--run-budget` (the whole run), `--review off\|p0-and-large\|all` |
 | `ralph start --mode plan --cr N` | Write the plan from the spec, then compile it into units |
 | `ralph start --task "…"` | One bounded iteration on work outside the plan, e.g. a bug fix |
 | `ralph start --dry-run` | The next unit's context pack and its size, and the exact command. Runs nothing |
@@ -82,6 +82,7 @@ ralph sync push         # review what would be published, then push
 | `ralph graph` / `ralph ready` | The units and their dependencies (`--mermaid`, `--json`) / what can start now |
 | `ralph graph compile` | Plan → units, after you edit the plan. Rejects units with more than 8 key files unless `--allow-large`. `--analyze` also has Claude score each open unit's complexity (1–5) and propose splits for the hard ones (one read-only call, a few cents) |
 | `ralph unblock ID` / `ralph set ID …` | Change a unit by hand; `set ID --status todo` accepts a triage unit |
+| `ralph add-unit "…"` | Add a unit that isn't in the plan (`--depends-on`, `--key-file`, `--description`). Its ID has a hash suffix (`U038-3f9c`), so two developers adding units never clash |
 | `ralph steer "…"` | A note for the next unit pack, without stopping the loop. `--hard "<cmd>"` adds a check every unit must pass |
 | `ralph pause` / `ralph resume` | Let the current iteration finish, then wait |
 | `ralph watch` | Follow the running loop: tool calls, context, cost. `--serve [--port 8765]` shows the same in a browser, on 127.0.0.1 only |
@@ -163,7 +164,19 @@ log/                                   ignored: iterations.jsonl and per-iterati
 ## Safety
 
 - **Runs are hermetic and bounded**, and the harness commits only the unit's own files.
-- **The guardrail hooks prevent accidents, not deliberate misuse.** The agent runs with permissions skipped so it can work unattended, so for overnight or unattended runs use a container or the OS sandbox.
+- **Pick how much Claude may do without asking** with `runner.permissions`:
+
+  | Mode | What it does | For |
+  |---|---|---|
+  | `bypass` (default) | Skips prompts; guardrail hooks stop commits, pushes and edits to harness state | Attended runs on your machine |
+  | `container` | The same, but refuses to start outside a container | Unattended or overnight runs |
+  | `strict` | Only an allowlist runs: the file tools, the gate commands and `runner.allow`; anything else is denied | CI, or when you want an explicit list |
+  | `sandbox` | Claude Code's OS sandbox (Seatbelt, or bubblewrap on Linux): commands write only to the project and reach only `runner.sandbox_domains` | Unattended runs without a container |
+
+  The guardrail hooks run in every mode. They prevent accidents, not deliberate misuse.
+- **The loop stops itself** when everything is done, a unit is blocked, 3 iterations change nothing, units that were done stop being done, or the run's total budget (`loop.max_cost_usd` or `--run-budget`) is spent.
+- **A broken tree is fixed first:** with `[verify] health` set, a quick check runs before each iteration, and if it fails the next task is to repair it.
+- **Project principles:** `ralph init` writes `.ralph/constitution.md`. Every unit gets it, and the reviewer fails a unit that breaks one of its principles.
 
 ## Review workflows
 

@@ -8,13 +8,22 @@ max_budget_usd = 30        # per iteration (Claude Code's own estimate; leave he
 timeout_minutes = 90       # per iteration
 compact_window = 200000    # auto-compact here instead of near the 1M-token limit
 setting_sources = "project,local"
+# How much Claude may do without asking:
+#   bypass    skip prompts; guardrail hooks stop accidents (attended runs on your machine)
+#   container the same, but only inside a container (unattended or overnight runs)
+#   strict    only an allowlist runs: file tools, the gate commands, and `allow` below
+#   sandbox   Claude Code's OS sandbox: commands write only to the project, reach only sandbox_domains
+permissions = "bypass"
+# allow = ["Bash(npm test *)"]               # strict: more commands the agent may run
+# sandbox_domains = ["pypi.org"]             # sandbox: hosts its commands may reach
+# sandbox_excluded = ["docker compose *"]    # sandbox: commands that run outside it
 # claude_version = "{{CLAUDE_VERSION}}"   # pin Claude Code; the loop stops if it changes
 
 [verify]
 review = "p0-and-large"    # off | p0-and-large | all: which units get the read-only review
 max_attempts = 3
 frozen = []                # globs the agent must never change, e.g. ["migrations/versions/**"]
-health = ""                # a quick command before each iteration
+health = ""                # a quick command before each iteration; if it fails, repairing comes first
 done = ""                  # must pass before a CR counts as complete
 paid_gates = {{PAID_GATES}}
 
@@ -29,6 +38,7 @@ paid_gates = {{PAID_GATES}}
 [loop]
 max_stalls = 3             # iterations in a row that change nothing
 tag_format = "{cr}-done"   # local tag when a CR converges; "" turns it off
+max_cost_usd = 0           # stop a run once it has spent this much in total (0: no limit; --run-budget)
 
 # Size budgets in lines, checked at start and by `ralph memory lint`.
 [memory]

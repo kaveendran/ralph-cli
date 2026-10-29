@@ -117,6 +117,9 @@ def ensure_project_files(project: ProjectPaths, name: str, description: str) -> 
     if not project.config.exists():
         write_text_atomic(project.config, render_config(detect_gates(project.root)))
         ui.info("  create  .ralph/config.toml")
+    if not project.constitution.exists():
+        write_text_atomic(project.constitution, render_template("constitution.md"))
+        ui.info("  create  .ralph/constitution.md (the principles every unit is reviewed against)")
     claude_md = project.root / "CLAUDE.md"
     if not claude_md.exists():
         write_text_atomic(claude_md, render_template("project-map.md", PROJECT_NAME=name,

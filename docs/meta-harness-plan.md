@@ -868,6 +868,16 @@ These changes stay useful until the new harness replaces the bash loop.
 - **Also ported:** the e2e scenarios that still apply (`tests/test_scaffold.py`), the `[telemetry]` OTel export from §10.4, `init --test-infra` (quiet, fail-fast scripts), `add-cr --prior-cr`, and `status` guidance before any units exist.
 - **Removed:** the bash commands, libraries, templates and `test/e2e.sh`. `ralph legacy` is gone; the previous loop lives on `main`, and `ralph migrate` moves a CR over.
 
+**Gaps closed after P5 (2026-10-30).** An audit of the feature table against the code found P1 rows that weren't actually built. They are now:
+- **Constitution:** `ralph init` writes `.ralph/constitution.md`. It goes into every unit pack and to the reviewer verbatim, and the reviewer fails a unit that breaks it.
+- **Health check:** `[verify] health` runs before each iteration. If it fails, the next iteration is a repair task, which must make the check pass. After 2 failed repairs in a row the loop stops.
+- **Stop rules from §10.2:** the loop stops when a unit that was done isn't any more (it compares which units are done, so one finishing can't hide another being undone), and when the run's total spend reaches `loop.max_cost_usd` or `--run-budget`.
+- **Size signals:** a unit whose runs compact twice or pass 160k tokens gets a `size_warning`, a note, and a line in `ralph status` suggesting a split.
+- **`ralph add-unit`:** adds a unit by hand, with a hash-suffixed ID like discovered units.
+- **Permission modes from §12.5:** `container`, `strict` and `sandbox` work as well as `bypass` (§20, rows 17–18).
+
+Still not built from the table: `ralph pr` (optional), the `test-runner` subagent (see the P2 notes), and graph memory ("later").
+
 **What building P5 taught us:**
 - **The old Ctrl-C didn't stop the experts.** Each `claude` runs in its own process group, so the terminal's Ctrl-C never reached it. Calls now carry a cancel signal the runner checks every second.
 - **The old retro cut its PR description after one line.** The draft's own `## Summary` heading ended the awk split. Reports are now split at the known section headings only.
@@ -900,7 +910,7 @@ These changes stay useful until the new harness replaces the bash loop.
 ---
 
 ## 20. Spike results (P0)
-These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session. Rows 12–14 were added while building P2, and rows 15–16 while building P5.
+These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session. Rows 12–14 were added while building P2, rows 15–16 while building P5, and rows 17–18 afterwards.
 
 | # | Question | Result | What it changes |
 |---|---|---|---|
@@ -920,6 +930,8 @@ These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in t
 | 14 | P2: does the complexity analysis catch what the size check misses? | **Yes.** See "What building P2 taught us". Haiku, $0.0016. | `--analyze` stays advisory: it reports and changes nothing. |
 | 15 | P5: do the parallel read-only experts work in print mode, without skipping permissions? | **Yes.** `ralph critique --model haiku` on a 3-unit toy plan ran 7 experts, at most 4 at once, then the lead. Two experts opened files themselves (Glob, Grep, Read), with 0 permission denials and no MCP servers. Total $0.03. | The lead noticed the experts couldn't see the spec's AC-001/AC-002, so plan experts now get the spec's acceptance criteria too. |
 | 16 | P5: does a scaffold come back as clean documents? | **Yes.** `ralph deploy scaffold --model haiku` returned all 4 through the `document` schema, with no chat preamble. The rollback doc kept U001's Rollback Plan, ran in reverse order, and marked U002/U003's missing ones as `<TODO>` instead of inventing them. 162 TODO markers, $0.01. | Structured results for every document a tool writes. |
+| 17 | Does `strict` (`dontAsk` plus an allowlist) let a unit finish? | **Yes, once the agent is told how.** Writes, the structured result and the exact gate command were allowed. The agent's habit of `cmd 2>&1; echo "exit=$?"` was denied, so its first attempt ended partial. Two fixes: a note in the contract telling it to run each command on its own, and allowing the subagent tool under its real name in Claude Code 2.1.311 (`Task`, not `Agent`). With those, U001 was done and committed with 0 denials (Haiku, under $0.01). | Strict mode needs the note, and allows `Task` and `Agent` both. |
+| 18 | Does `sandbox` work headless on macOS? | **Yes.** The `sandbox` block in the per-run `--settings` applies (`sandbox_init_ms` appears in the stream). A lone `python3 -m unittest -q` was auto-approved as a sandboxed command, with no allow rule needed. Compound commands still need approval ("contains multiple operations"), so the same note applies. U002 was done and committed with 0 denials. | Recommended for unattended runs without a container. Linux needs bubblewrap and socat; native Windows isn't supported. |
 
 The raw event streams from these runs become the contract-test fixtures in P1, with paths and session IDs removed.
 

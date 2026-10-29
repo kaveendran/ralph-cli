@@ -272,5 +272,88 @@ class MemoryAndSkills(LoopTestCase):
         self.assertEqual(self.units()["U001"].status, Status.DONE)
 
 
+
+def deletes_step(path: str, unit: str = "task"):
+    """A step that deletes a file and reports done (e.g. a repair)."""
+    def step(call):
+        (call.cwd / path).unlink()
+        return helpers.agent_result(call, helpers.result_events({"unit": unit, "status": "done", "summary": "fixed"}))
+    return step
+
+
+class Safeguards(LoopTestCase):
+    def test_a_failing_health_check_makes_repair_the_next_task(self):
+        (self.root / "BROKEN").write_text("x\n")
+        git(self.root, "add", "BROKEN")
+        git(self.root, "commit", "-qm", "break the tree")
+        self.config.verify.health = "test ! -f BROKEN"
+        kernel, runner = self.kernel(deletes_step("BROKEN"), done_step("U001", {"a.py": "a\n"}), max_iterations=2)
+        kernel.run()
+        self.assertIn("Repair the failing health check", runner.calls[0].prompt)
+        self.assertIn("Command: `test ! -f BROKEN` (exit 1)", runner.calls[0].prompt)
+        self.assertIn("`test ! -f BROKEN` (health)", runner.calls[0].prompt)        # a check the repair must pass
+        self.assertEqual(git(self.root, "log", "-2", "--format=%s").splitlines(),
+                         ["U001: First", "task: Repair the failing health check"])
+        self.assertIs(self.units()["U001"].status, Status.DONE)
+
+    def test_the_loop_stops_when_repairs_keep_failing(self):
+        self.config.verify.health = "false"
+        kernel, runner = self.kernel(report_step("task", "partial"), report_step("task", "partial"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertEqual(len(runner.calls), 2)
+        self.assertIn("the health check still fails after 2 repair attempts", out.getvalue())
+
+    def test_the_constitution_reaches_the_builder_and_the_reviewer(self):
+        self.project.constitution.parent.mkdir(exist_ok=True)
+        self.project.constitution.write_text("# Project principles\n1. All money is integer cents.\n")
+        self.config.verify.review = "all"
+        review = lambda call: helpers.agent_result(call, helpers.result_events(
+            {"verdict": "changes_requested", "gaps": [], "rule_violations": ["price is a float"]}))
+        kernel, runner = self.kernel(done_step("U001", {"a.py": "price = 1.5\n"}), review, max_iterations=1)
+        kernel.run()
+        self.assertIn("1. All money is integer cents.", runner.calls[0].prompt)      # the pack
+        self.assertIn("1. All money is integer cents.", runner.calls[1].prompt)      # the review
+        self.assertIsNot(self.units()["U001"].status, Status.DONE)
+        self.assertIn("price is a float", self.store.notes_path("U001").read_text())
+
+    def test_a_run_stops_at_its_budget(self):
+        kernel, runner = self.kernel(done_step("U001", {"a.py": "a\n"}), done_step("U002", {"b.py": "b\n"}),
+                                     run_budget_usd=0.4)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertEqual(len(runner.calls), 1)                     # each scripted run costs $0.50
+        self.assertIn("this run has spent $0.50, over its $0.4 budget", out.getvalue())
+
+    def test_units_that_stop_being_done_stop_the_loop(self):
+        def undoes_the_first(call):
+            unit = self.store.load()["U001"]
+            unit.status = Status.TODO                              # e.g. a bad merge while paused
+            self.store.save(unit)
+            return done_step("U002", {"b.py": "b\n"})(call)
+        kernel, runner = self.kernel(done_step("U001", {"a.py": "a\n"}), undoes_the_first, done_step("U001", {}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertIn("Stopping: U001 was done and isn't any more", out.getvalue())
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_a_unit_that_keeps_compacting_is_marked_too_big(self):
+        def compacting(call):
+            events = helpers.result_events({"unit": "U001", "status": "done", "summary": "s"})
+            events.insert(1, {"type": "system", "subtype": "compact_boundary", "compact_metadata": {"pre_tokens": 1}})
+            events.insert(1, {"type": "system", "subtype": "compact_boundary", "compact_metadata": {"pre_tokens": 1}})
+            (call.cwd / "a.py").write_text("a\n")
+            return helpers.agent_result(call, events)
+        kernel, _ = self.kernel(compacting, max_iterations=1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            kernel.run()
+        self.assertEqual(self.units()["U001"].size_warning, "compacted 2 times")
+        self.assertIn("Too big for one session?", self.store.notes_path("U001").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

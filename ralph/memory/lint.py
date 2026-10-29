@@ -39,6 +39,8 @@ def lint_memory(root: Path, budgets: MemoryConfig, units_dirs: list[Path] = (),
          "it loads into every session: keep it a map, and move area rules to .claude/rules/")
     over(root / "AGENTS.md", budgets.agents_md_lines,
          "keep only run/build/test commands; move the rest to the docs it points to")
+    over(root / ".ralph" / "constitution.md", budgets.rule_lines,
+         "it goes into every unit pack and every review: keep it to a few checkable principles")
     for rule in sorted((root / ".claude" / "rules").glob("**/*.md")):
         meta, _ = frontmatter.split(read_text(rule))
         scope = "only where its paths match" if meta.get("paths") else "in every session (it has no paths:)"

@@ -98,6 +98,11 @@ class ProjectPaths:
         return self.ralph_dir / "control"
 
     @property
+    def constitution(self) -> Path:
+        """The project's principles: in every unit pack, and checked by the reviewer."""
+        return self.ralph_dir / "constitution.md"
+
+    @property
     def learnings_inbox(self) -> Path:
         """Lessons the agent reported, waiting for `ralph memory review`."""
         return self.ralph_dir / "learnings" / "inbox.jsonl"

@@ -2,14 +2,19 @@ import json
 import unittest
 from pathlib import Path
 
-from ralph.config import load_config
+from ralph.config import RunnerConfig, load_config
 from ralph.errors import RalphError
 from ralph.kernel.outcome import Evidence, Verdict, judge
+from ralph.runner import permissions
+from ralph.runner.base import AgentCall
+from ralph.runner.cli_backend import build_command
 from ralph.runner.hooks import decide
 from ralph.runner.stream import StreamStats
 from ralph.verify.gates import GateResult
 from ralph.verify.integrity import check_changes
 from ralph.verify.review import Review
+from unittest import mock
+
 from tests.helpers import FIXTURES, TempDirTestCase
 
 POLICY = {"root": "/repo", "frozen": ["migrations/versions/*"]}
@@ -145,6 +150,55 @@ class Config(TempDirTestCase):
         path = self.tmp / "config.toml"
         path.write_text('[verify.gates]\nunit = "pytest -q"\n[verify.by_type]\ndefault = ["unit"]\n')
         self.assertEqual(load_config(path).verify.gates, {"unit": "pytest -q"})
+
+
+
+class PermissionModes(unittest.TestCase):
+    def call_for(self, mode: str, **runner) -> list[str]:
+        posture = permissions.posture(RunnerConfig(permissions=mode, **runner), ["bash scripts/test-unit.sh", ""])
+        call = AgentCall(prompt="x", cwd=Path("."), model="haiku", log_path=Path("s.jsonl"),
+                         skip_permissions=posture.skip_permissions, permission_mode=posture.mode,
+                         allowed_tools=posture.allowed_tools)
+        return build_command(call), posture
+
+    def test_bypass_and_container_skip_prompts(self):
+        command, posture = self.call_for("bypass")
+        self.assertIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--allowedTools", command)
+        self.assertTrue(self.call_for("container")[1].skip_permissions)
+
+    def test_strict_allows_only_the_file_tools_the_checks_and_your_rules(self):
+        command, _ = self.call_for("strict", allow=["Bash(npm test *)"])
+        self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        allowed = command[command.index("--allowedTools") + 1:]
+        self.assertEqual(command.index("--allowedTools"), len(command) - len(allowed) - 1)    # it comes last
+        for rule in ("Edit", "Read", "Task", "Agent", "Bash(bash scripts/test-unit.sh)",
+                     "Bash(bash scripts/test-unit.sh *)", "Bash(npm test *)"):
+            self.assertIn(rule, allowed)            # `Task` is the subagent tool's name in Claude Code 2.1.311
+        self.assertNotIn("Bash()", allowed)
+
+    def test_the_agent_is_told_to_run_commands_one_at_a_time_when_it_cant_be_asked(self):
+        # Seen in real runs: `cmd 2>&1; echo "exit=$?"` was denied in both modes, a lone `cmd` ran.
+        for mode in ("strict", "sandbox"):
+            self.assertIn("Run each command on its own", permissions.note(RunnerConfig(permissions=mode)))
+        self.assertEqual(permissions.note(RunnerConfig(permissions="bypass")), "")
+
+    def test_sandbox_confines_commands_and_allows_the_excluded_ones(self):
+        command, posture = self.call_for("sandbox", sandbox_domains=["pypi.org"], sandbox_excluded=["docker compose *"])
+        self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+        self.assertEqual(posture.sandbox, {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+                                           "excludedCommands": ["docker compose *"],
+                                           "network": {"allowedDomains": ["pypi.org"]}})
+        self.assertEqual(posture.allowed_tools, ["Bash(docker compose *)"])
+
+    def test_modes_that_cant_work_here_are_refused(self):
+        with self.assertRaises(RalphError):
+            permissions.check(RunnerConfig(permissions="yolo"))
+        with mock.patch.object(permissions, "in_container", return_value=False), self.assertRaises(RalphError):
+            permissions.check(RunnerConfig(permissions="container"))
+        with mock.patch.object(permissions, "in_container", return_value=True):
+            permissions.check(RunnerConfig(permissions="container"))
 
 
 if __name__ == "__main__":

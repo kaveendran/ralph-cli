@@ -28,6 +28,8 @@ def build_command(call: AgentCall, claude: str = "claude") -> list[str]:
                "--max-budget-usd", f"{call.max_budget_usd:g}"]
     if call.skip_permissions:
         command.append("--dangerously-skip-permissions")
+    elif call.permission_mode:
+        command += ["--permission-mode", call.permission_mode]
     if call.tools is not None:
         command += ["--tools", ",".join(call.tools)]
     if call.json_schema:
@@ -42,6 +44,8 @@ def build_command(call: AgentCall, claude: str = "claude") -> list[str]:
         if call.mcp_config:
             command += ["--strict-mcp-config", "--mcp-config", str(call.mcp_config)]
         command += ["--setting-sources", call.setting_sources]
+    if call.allowed_tools and not call.skip_permissions:
+        command += ["--allowedTools", *call.allowed_tools]    # last: it takes every value up to the next flag
     return command
 
 

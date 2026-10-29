@@ -7,6 +7,7 @@ reported, never deleted.
 """
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 
 from ralph.model.plan import Plan, PlanUnit
@@ -91,6 +92,14 @@ def compile_plan(plan: Plan, existing: dict[str, Unit], cr: str) -> CompileResul
             if not unit.discovered_from:
                 result.not_in_plan.append(unit_id)
     return result
+
+
+def added_unit_id(units: dict, title: str, author: str) -> str:
+    """An ID for a unit added by hand: the next number plus a hash suffix, `U038-3f9c`,
+    so two developers who add units at the same time never pick the same ID."""
+    numbers = [int(m.group(1)) for unit_id in units if (m := re.match(r"U(\d+)", unit_id))]
+    digest = hashlib.sha1(f"{author}:{title}".encode("utf-8")).hexdigest()[:4]
+    return f"U{max(numbers, default=0) + 1:03d}-{digest}"
 
 
 def discovered_unit_id(parent_id: str, title: str) -> str:
