@@ -111,7 +111,8 @@ def run_task(kernel: Kernel, title: str, text: str) -> int:
 
         commit = ""
         if not problems:
-            commit = vcs.commit_paths(kernel.git, changes.paths,
+            entry = [str(p.relative_to(kernel.root)) for p in kernel.write_ledger(task_unit, report, changes.paths)]
+            commit = vcs.commit_paths(kernel.git, changes.paths + entry,
                                       f"task: {title}\n\n{report.get('summary', '').strip()}\n\nGenerated-by: ralph (Claude Code)")
             ui.ok(f"Task done{' and committed (' + commit[:10] + ')' if commit else ' (nothing to commit)'}.")
         else:
@@ -132,7 +133,8 @@ def dry_run(kernel: Kernel) -> int:
             ui.info(f"    {reason}")
         return 0
     steering = read_text(kernel.control.steer_file)     # peek; the real run consumes it
-    pack = kernel.build_unit_pack(unit, units, steering=steering)
+    impacts = kernel.impact_check(unit)
+    pack = kernel.build_unit_pack(unit, units, steering=steering, team_changes=impacts.digest())
     with tempfile.TemporaryDirectory() as tmp:
         call = kernel.agent_call(pack.text, Path(tmp), "unit-result.json")
         command = describe_command(build_command(call))
@@ -150,6 +152,10 @@ def dry_run(kernel: Kernel) -> int:
         ui.info(f"  Cut to fit:    {', '.join(pack.truncated)}")
     if pack.spec_pointers:
         ui.info(f"  Spec pointers: {len(pack.spec_pointers)} section(s) left for the agent to open on demand")
+    if impacts.relevant:
+        ui.info(f"  Team changes: {len(impacts.relevant)} affect this unit (in the pack)")
+    if impacts.conflicts_here:
+        ui.warn(f"The real run would stop: {', '.join(impacts.conflicts_here)} conflict with the shared branch.")
     ui.info(f"  For comparison: the spec, the whole plan, the old progress file and build prompt come to "
             f"{old_chars:,} chars (~{old_chars // 4:,} tokens).")
     ui.info(f"  Command:       {command}")

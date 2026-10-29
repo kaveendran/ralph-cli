@@ -72,12 +72,24 @@ class NotifyConfig:
 
 
 @dataclass
+class TeamConfig:
+    """Manual team sync (docs/meta-harness-plan.md §11). Only `ralph sync` and
+    `ralph sync push` touch the remote; the loop reads what's already local."""
+    remote: str = "origin"
+    branch: str = ""                    # the shared branch; default: your branch's upstream
+    ledger: bool = True                 # write .ralph/ledger/ entries with each unit's commit
+    impact_days: int = 7                # teammates' entries this recent count for the impact check
+    stale_sync_hours: int = 12          # remind you to `ralph sync` when the last fetch is older
+
+
+@dataclass
 class Config:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    team: TeamConfig = field(default_factory=TeamConfig)
 
 
 def _apply(target, values: dict, where: str) -> None:
@@ -103,7 +115,7 @@ def load_config(config_path: Path) -> Config:
         raise RalphError(f"{config_path} isn't valid TOML: {problem}") from None
 
     sections = {"runner": config.runner, "verify": config.verify, "loop": config.loop,
-                "memory": config.memory, "notify": config.notify}
+                "memory": config.memory, "notify": config.notify, "team": config.team}
     unknown = sorted(set(data) - set(sections))
     if unknown:
         raise RalphError(f"Unknown section(s) in {config_path}: {', '.join(unknown)}",

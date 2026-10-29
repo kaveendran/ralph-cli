@@ -26,3 +26,4 @@ End with the structured result the harness asks for:
 - `discovered_issues`: problems outside this unit, one line each.
 - `learnings`: at most 5 lessons worth remembering for this project, each with the paths it applies to.
 - `interfaces_changed`: public functions, endpoints or schemas whose shape you changed, and whether the change breaks callers.
+- `acknowledged_impacts`: the IDs of the teammates' changes listed in your message that you checked and handled, if there are any.

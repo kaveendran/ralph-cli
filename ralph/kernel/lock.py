@@ -44,6 +44,11 @@ class RunLock:
             return self
         raise RalphError(f"Couldn't take the run lock at {self.path}.")
 
+    def holder(self) -> dict | None:
+        """The running loop's {pid, since}, or None when no loop holds the lock."""
+        owner = self._owner()
+        return owner if owner and _alive(owner.get("pid", -1)) else None
+
     def __exit__(self, *exc) -> None:
         owner = self._owner()
         if owner and owner.get("pid") == os.getpid():

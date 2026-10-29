@@ -35,6 +35,7 @@ class PackInputs:
     instructions: str = ""
     last_attempt: str = ""       # the unit's recent notes: failures, review gaps
     steering: str = ""           # notes from `ralph steer`
+    team_changes: str = ""       # the impact digest: teammates' changes that affect the unit
     checks: list[tuple[str, str]] = field(default_factory=list)   # (gate name, command) the harness will run
     lessons: list[str] = field(default_factory=list)               # unreviewed lessons that match the unit
     skills: list[tuple[str, str]] = field(default_factory=list)    # (skill name, why it fits)
@@ -131,6 +132,9 @@ def build_pack(inputs: PackInputs) -> Pack:
     steering = ""
     if inputs.steering.strip():
         steering = f"\n## Notes from the developer\n\n{inputs.steering.strip()}\n"
+    team_changes = ""
+    if inputs.team_changes.strip():     # already capped at 3,000 characters by team.impact
+        team_changes = f"\n## Teammates' changes that affect this unit\n\n{inputs.team_changes.strip()}\n"
 
     text = render(
         "unit_pack.md",
@@ -142,6 +146,7 @@ def build_pack(inputs: PackInputs) -> Pack:
         HEAD=inputs.head[:12] or "(no commits)",
         CHECKS=format_checks(inputs.checks),
         STEERING=steering,
+        TEAM_CHANGES=team_changes,
         PLAN_PATH=str(inputs.plan.path) if inputs.plan else "(no plan)",
         **sections,
     )

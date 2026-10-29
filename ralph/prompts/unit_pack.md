@@ -20,7 +20,7 @@ This is the complete entry from `{{PLAN_PATH}}`. You don't need to read the rest
 ## Spec excerpts cited by your unit
 
 {{SPEC_EXCERPTS}}
-
+{{TEAM_CHANGES}}
 ## Lessons from earlier units
 
 {{LESSONS}}

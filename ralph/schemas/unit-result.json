@@ -36,6 +36,7 @@
           "breaking": {"type": "boolean"}
         }
       }
-    }
+    },
+    "acknowledged_impacts": {"type": "array", "items": {"type": "string"}}
   }
 }

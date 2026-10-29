@@ -10,7 +10,7 @@ pushes or rebases; syncing with teammates is a manual command
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ralph import ui
@@ -44,6 +44,8 @@ from ralph.skills.lint import lint_skills
 from ralph.skills.refresh import stale_skills
 from ralph.skills.registry import discover as discover_skills
 from ralph.skills.select import suggest as suggest_skills
+from ralph.team import interfaces, ledger
+from ralph.team.impact import ImpactReport, age, assess, team_view
 from ralph.vcs import commit as vcs
 from ralph.vcs.commit import RunChanges, Snapshot
 from ralph.vcs.git import Git
@@ -82,6 +84,7 @@ class Kernel:
         self.run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.run_dir = project.log_dir / self.run_id
         self.developer = self.git.run("config", "user.name", check=False).stdout.strip()
+        self.email = self.git.run("config", "user.email", check=False).stdout.strip()
         self.failures = self.invalid_results = self.stalls = 0
         self.converged_once = False
         self._plan_cache: tuple[float, Plan | None] | None = None
@@ -114,9 +117,11 @@ class Kernel:
 
     def iterate(self, iteration: int, unit: Unit, units: dict[str, Unit]) -> bool:
         """Run one unit through every phase. Returns True when the loop should stop."""
-        self.impact_check(unit)
+        impacts = self.impact_check(unit)
+        if self._team_stop(unit, impacts):
+            return True
         run_dir = self.run_dir / f"{iteration:02d}-{unit.id}"
-        call, pack = self.prepare(unit, units, run_dir)
+        call, pack = self.prepare(unit, units, run_dir, impacts)
         ui.section(f"Iteration {iteration} · {unit.id} {unit.title} · attempt {unit.attempts + 1} "
                    f"· context pack ~{pack.tokens:,} tokens")
         snapshot = vcs.take_snapshot(self.git)
@@ -164,12 +169,29 @@ class Kernel:
                 f"max ${self.options.max_budget_usd or runner_config.max_budget_usd:g}, "
                 f"{runner_config.timeout_minutes} min, compaction at {runner_config.compact_window:,} tokens")
         ui.info(f"  Hermetic: {'on' if runner_config.hermetic else 'off'} · pushes: never (sync is manual)")
+        self._team_status()
         self._memory_and_skill_checks()
         if not self.config.verify.gates:
             ui.warn("No gates are configured in .ralph/config.toml, so nothing checks the agent's work "
                     "except the review. Add [verify.gates].")
         elif not self.options.skip_baseline:
             self._baseline()
+
+    def _team_status(self) -> None:
+        """Where teammates' changes come from, and how old that knowledge is. Never fetches."""
+        view = team_view(self.git, self.config.team, self.email)
+        if view.shared is None:
+            return
+        fetched = age(view.last_fetch)
+        ui.info(f"  Team: shared branch {view.shared.name} · last fetch {fetched} · "
+                f"{len(view.entries)} recent change(s) from teammates")
+        stale = self.config.team.stale_sync_hours
+        if view.last_fetch is None or (datetime.now(timezone.utc) - view.last_fetch).total_seconds() > stale * 3600:
+            ui.warn(f"Your last fetch was {fetched}, so teammates' newer work isn't considered. "
+                    "Run 'ralph sync' between runs (the loop itself never fetches).")
+        if view.conflicts:
+            ui.warn(f"Your branch conflicts with {view.shared.name} in {', '.join(view.conflicts[:5])}. "
+                    "Units that touch those files will stop; run 'ralph sync' to resolve.")
 
     def _memory_and_skill_checks(self) -> None:
         """Warn (never stop) about memory over budget, broken skills and skills gone stale."""
@@ -226,30 +248,50 @@ class Kernel:
 
     # ── 3. Impact check ──────────────────────────────────────────────────────
 
-    def impact_check(self, unit: Unit) -> list[str]:
-        """Teammates' changes that affect this unit, from your last `ralph sync`.
+    def impact_check(self, unit: Unit) -> ImpactReport:
+        """Teammates' changes that affect this unit, from the ledger and the
+        shared branch as your last `ralph sync` left them. Reads local data only."""
+        return assess(team_view(self.git, self.config.team, self.email), unit, self._unit_text(unit), self.root)
 
-        Arrives with manual team sync (P3a). It only ever reads local data.
-        """
-        return []
+    def _team_stop(self, unit: Unit, impacts: ImpactReport) -> bool:
+        """Stop when a teammate already did this unit, or its files won't merge with theirs."""
+        if impacts.duplicates:
+            reason = f"{impacts.duplicates[0].detail}, so building it here would duplicate their work"
+            hint = "Run 'ralph sync' to pull their work, then start again."
+        elif impacts.conflicts_here:
+            reason = (f"{unit.id}'s files conflict with teammates' work on the shared branch: "
+                      f"{', '.join(impacts.conflicts_here[:5])}")
+            hint = "Run 'ralph sync', resolve the conflicts, then start again."
+        else:
+            return False
+        ui.error("Stopping: " + reason, hint)
+        self.notifier.send("stopped", reason, cr=self.cr.name, unit=unit.id)
+        return True
+
+    def _unit_text(self, unit: Unit) -> str:
+        plan = self._plan()
+        plan_unit = plan.unit(unit.id) if plan else None
+        return plan_unit.section if plan_unit else unit.description
 
     # ── 4. Prepare ───────────────────────────────────────────────────────────
 
-    def prepare(self, unit: Unit, units: dict[str, Unit], run_dir: Path) -> tuple[AgentCall, Pack]:
-        pack = self.build_unit_pack(unit, units, steering=self.control.take_steer())
+    def prepare(self, unit: Unit, units: dict[str, Unit], run_dir: Path,
+                impacts: ImpactReport | None = None) -> tuple[AgentCall, Pack]:
+        pack = self.build_unit_pack(unit, units, steering=self.control.take_steer(),
+                                    team_changes=impacts.digest() if impacts else "")
         write_text_atomic(run_dir / "pack.md", pack.text)
         return self.agent_call(pack.text, run_dir, "unit-result.json"), pack
 
-    def build_unit_pack(self, unit: Unit, units: dict[str, Unit], steering: str = "") -> Pack:
-        plan = self._plan()
-        plan_unit = plan.unit(unit.id) if plan else None
+    def build_unit_pack(self, unit: Unit, units: dict[str, Unit], steering: str = "",
+                        team_changes: str = "") -> Pack:
         lessons = relevant_lessons(read_inbox(self.project.learnings_inbox), unit.key_files,
                                    self.config.memory.learnings_in_pack)
-        skills = suggest_skills(self._skills(), unit, plan_unit.section if plan_unit else unit.description)
+        skills = suggest_skills(self._skills(), unit, self._unit_text(unit))
         return build_pack(PackInputs(
-            unit=unit, units=units, plan=plan, specs=self._specs(unit),
+            unit=unit, units=units, plan=self._plan(), specs=self._specs(unit),
             instructions=read_text(self.cr.instructions), last_attempt=self.store.recent_notes(unit.id),
-            steering=steering, checks=self.checks_for(unit), branch=self.git.branch(), head=self.git.head(),
+            steering=steering, team_changes=team_changes, checks=self.checks_for(unit),
+            branch=self.git.branch(), head=self.git.head(),
             lessons=[_lesson_line(lesson) for lesson in lessons],
             skills=[(skill.name, why) for skill, why in skills]))
 
@@ -433,6 +475,8 @@ class Kernel:
               evidence: Evidence, changes: RunChanges) -> str:
         unit.wip_paths = sorted(set(unit.wip_paths) | set(changes.paths))
         unit.wip_overlap = sorted(set(unit.wip_overlap) | set(changes.overlapping))
+        unit.acknowledged_impacts = sorted(set(unit.acknowledged_impacts) |
+                                           set((report or {}).get("acknowledged_impacts", [])))
         if judgement.counts_attempt:
             unit.attempts += 1
         notes = _notes_for(judgement, evidence, report)
@@ -461,6 +505,7 @@ class Kernel:
         self.store.save(unit)
         state = [self.store.path(unit.id), self.store.notes_path(unit.id),
                  self.project.learnings_inbox] + [self.store.path(u) for u in added]
+        state += self.write_ledger(unit, report, work)
         message = f"{unit.id}: {unit.title}\n\n{report.get('summary', '').strip()}\n\nGenerated-by: ralph (Claude Code)"
         sha = vcs.commit_paths(self.git, work + self._existing_relative(state), message)
         ui.ok(f"{unit.id} done and committed ({sha[:10]}).")
@@ -482,6 +527,18 @@ class Kernel:
         ui.warn(f"{unit.id} is blocked: {reason}")
         self.notifier.send("blocked", f"{unit.id} {unit.title} is blocked: {reason}", cr=self.cr.name, unit=unit.id)
         return sha
+
+    def write_ledger(self, unit: Unit, report: dict, paths: list[str]) -> list[Path]:
+        """The ledger entry for work about to be committed: what changed, and which
+        interfaces (reported by the agent, cross-checked from the code)."""
+        if not self.config.team.ledger:
+            return []
+        files = vcs.changed_entries(self.git, vcs.committable(self.git, paths))
+        detected = interfaces.detect(self.git, [path for _, path in files])
+        entry = ledger.new_entry(unit.id, self.cr.name, unit.title, self.developer, self.email, self.git.head(),
+                                 files, interfaces.merge(report.get("interfaces_changed", []), detected),
+                                 report.get("summary", ""), unit.acknowledged_impacts)
+        return [ledger.write_entry(self.root, entry)]
 
     def _add_discovered(self, unit: Unit, units: dict[str, Unit], issues: list[str]) -> list[str]:
         added = []

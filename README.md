@@ -42,13 +42,30 @@ For a project that used the previous loop, run `ralph migrate --cr N --dry-run` 
 | Phase | What happens |
 |---|---|
 | Select | The next ready unit: one in progress first, then the plan's build order. A blocked unit only holds back the units that depend on it. |
+| Impact check | Teammates' changes (as of your last `ralph sync`) that affect the unit. Local only; see [Working with a team](#working-with-a-team). |
 | Prepare | A **context pack** with only the unit's own plan entry, the spec sections it cites, its dependencies' handoff notes, its last failure, your `ralph steer` notes, the checks it must pass, up to 5 unreviewed lessons that match its files, and 1–3 project skills that fit it. A few thousand tokens, however big the project gets. |
 | Run | One `claude -p` session, **hermetic** (only the project's MCP servers and settings, no auto memory) and **bounded** (turns, budget, time, compaction at 200k tokens). Guardrail hooks stop the agent from committing, pushing or editing harness state. An `explorer` subagent handles codebase searches. |
 | Verify | The harness runs the gates itself. An integrity check fails deleted tests, skip markers and frozen paths. For P0 and Large units, a separate read-only reviewer checks the tests against the acceptance criteria. |
-| Commit | Only the files the unit changed, across all its attempts. Your own uncommitted work is never swept in. After 3 failed attempts the unit is blocked, and its work is saved under `refs/ralph/rejected/`. |
+| Commit | Only the files the unit changed, across all its attempts, plus its ledger entry. Your own uncommitted work is never swept in. After 3 failed attempts the unit is blocked, and its work is saved under `refs/ralph/rejected/`. |
 | Record | One line per iteration in `log/iterations.jsonl`: turns, minutes, cost, peak context, compactions, gates, review. |
 
 When every unit is done, a convergence check compares the implementation with the spec's acceptance criteria. Any gaps become new units; otherwise the CR is tagged `<cr>-done` locally. **The loop never pushes, fetches or rebases.** Publishing is up to you.
+
+## Working with a team
+
+Sync is manual: nothing reaches or leaves the remote unless you run a command.
+
+```bash
+ralph sync              # fetch; see what teammates landed and what it means for your units; rebase if you agree
+ralph start --cr 2      # the loop works locally, with what your last sync brought in
+ralph sync push         # review what would be published, then push
+```
+
+- **The ledger.** Each finished unit commits a small entry in `.ralph/ledger/`: the files it changed, the interfaces it changed (the agent's report, cross-checked by reading the code before and after), migrations, and a summary.
+- **The impact check.** Before each unit, the loop compares teammates' entries with the unit's planned and changed files and the functions it uses, all locally:
+  - **BREAKING** (an interface it uses changed) and **OVERLAP** (a file it plans to change changed) go into the unit's context. The agent acknowledges what it handled.
+  - **DUPLICATE** (a teammate already finished this unit) and **CONFLICT** (its files won't merge with the shared branch) stop the loop until you `ralph sync`.
+- **The shared branch** is your branch's upstream, or `[team] branch`. The loop reminds you when your last fetch is older than 12 hours; it never fetches itself.
 
 ## Commands
 
@@ -66,6 +83,10 @@ When every unit is done, a convergence check compares the implementation with th
 | `ralph steer "…"` | A note for the next unit pack, without stopping the loop. `--hard "<cmd>"` adds a check every unit must pass |
 | `ralph pause` / `ralph resume` | Let the current iteration finish, then wait |
 | `ralph watch` | Follow the running loop: tool calls, context, cost. `--serve [--port 8765]` shows the same in a browser, on 127.0.0.1 only |
+| `ralph sync` | Fetch the shared branch (the only network call), show what teammates landed and how it affects your open units, then rebase only if you say yes. `--no-rebase` just fetches and reports |
+| `ralph sync push` | Show the commits, ledger entries and tags that would be published, then push after you confirm. Never forces |
+| `ralph changes` / `ralph team` | What changed recently and who did it / per developer, plus the files more than one of you changed. As of your last sync |
+| `ralph impact ID` | For an open unit: teammates' changes that affect it. For a finished one: the open units it affects |
 | `ralph memory lint` | Size budgets for `CLAUDE.md`, `AGENTS.md`, rules, skills and unit notes (`--strict` for CI). Also checked at start |
 | `ralph memory review` | Walk the lessons the agent reported, most-recurring first, and promote each one you approve: to a path-scoped rule, `CLAUDE.md`, or a skill. Leaves the edits uncommitted so you can reword them |
 | `ralph memory decay` | Summarise the notes of units finished long ago (the full text moves to `archive/`) and move reviewed lessons out of the inbox |
@@ -109,6 +130,10 @@ rule_lines = 50
 skill_lines = 500
 learnings_in_pack = 5
 
+[team]
+# branch = "main"          # the branch you share (default: your branch's upstream)
+impact_days = 7            # teammates' changes this recent are checked against each unit
+
 [notify]                   # best-effort; a failure never changes what the loop does
 # webhook = "https://hooks.slack.com/services/…"   # gets a JSON POST with a `text` field
 # command = "terminal-notifier -message 'ralph needs you'"   # gets the event as JSON on stdin
@@ -120,6 +145,7 @@ events = ["blocked", "stopped", "complete", "usage_limit"]
 ```
 .ralph/config.toml                     committed: harness settings
 .ralph/learnings/inbox.jsonl           committed: lessons the agent reported (reviewed ones move to archive.jsonl)
+.ralph/ledger/<time>-<cr>-<unit>.json  committed with each unit: what it changed, for teammates
 .claude/skills/<name>/SKILL.md         committed: project skills (`ralph-versions:` records what they were written for)
 .claude/rules/<area>.md                committed: path-scoped rules, e.g. promoted lessons
 development/<cr>/spec/spec.md          you write it

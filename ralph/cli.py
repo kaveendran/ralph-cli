@@ -12,14 +12,15 @@ import subprocess
 import sys
 
 from ralph import __version__, ui
-from ralph.commands import control, doctor, graph, memory, migrate, scaffold, skills, start, status, units, watch
+from ralph.commands import (control, doctor, graph, memory, migrate, scaffold, skills, start, status, team, units,
+                            watch)
 from ralph.errors import RalphError
 from ralph.prompts import PACKAGE_DIR
 
 REPO_DIR = PACKAGE_DIR.parent
 BASH_COMMANDS = {"critique", "refine-plan", "retro", "deploy"}
 LEGACY_COMMANDS = {"init", "add-cr", "status", "start", "watch", *BASH_COMMANDS}
-COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, memory, skills, migrate, doctor)
+COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, team, memory, skills, migrate, doctor)
 
 EPILOG = """\
 typical workflow:
@@ -31,6 +32,11 @@ typical workflow:
   ralph watch                        (another terminal) follow it live; --serve for a browser view
   ralph status                       progress, blocked units, per-unit time/cost/context
   ralph memory review                now and then: promote the lessons the agent reported
+
+with a team (manual; the loop itself never fetches or pushes):
+  ralph sync                         fetch the shared branch, see what affects your units, rebase if you agree
+  ralph sync push                    review what would be published, then push it
+  ralph changes / team / impact ID   what changed and who it affects, as of your last sync
 
 still run by the original bash scripts: critique, refine-plan, retro, deploy
 the previous loop, for CRs that aren't migrated: ralph legacy start --cr N

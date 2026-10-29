@@ -555,14 +555,17 @@ Every command that pushes prints a summary and asks for confirmation; `--yes` sk
 ```
 Git computes the deterministic fields. The semantic ones (`interfaces`, `summary`) come from the agent's structured result and are cross-checked: for example, an exported-symbol diff or an OpenAPI diff when one exists.
 
+As built (P3a): the entry doesn't store `commit`, because that commit doesn't exist yet when the entry is written. Readers get it from git, as the commit that added the file. The cross-check compares each changed file at HEAD with the working tree. For Python it uses `ast`: a removed public function or method is breaking, and so is a removed or renamed parameter or a new required one. For TS/JS it checks removed `export` names. An OpenAPI diff isn't built yet.
+
 **How reliable this is:**
 - **Exact:** the file list and merge conflicts, because git computes them.
 - **Best-effort:** interface changes. They come from the agent's own report, cross-checked with language tooling where it exists (an OpenAPI diff, exported-symbol diffs for Python and TypeScript).
 - Treat BREAKING as a strong hint, not a guarantee. The gates and the per-unit review are the real safety net.
 
 ### 11.5 What the loop does with synced data (local, read-only)
-At the start of each iteration (phase 3), the harness reads the ledger entries and claims **already on your machine** and classifies them against the selected unit:
-- **CONFLICT:** `git merge-tree --write-tree <local copy of the integration branch> HEAD` reports conflicts ([git merge-tree](https://git-scm.com/docs/git-merge-tree)). The loop stops and asks you to run `ralph sync` and resolve. It never rebases by itself.
+At the start of each iteration (phase 3), the harness reads the ledger entries and claims **already on your machine** and classifies them against the selected unit. Entries count when they're not pulled yet, or landed in your branch within `[team] impact_days` (default 7); your own entries never count.
+- **DUPLICATE** (added while building P3a): a teammate's entry is for this very unit. The loop stops instead of building it twice. Without claims, this is the collision most likely to happen.
+- **CONFLICT:** `git merge-tree --write-tree <local copy of the integration branch> HEAD` reports conflicts ([git merge-tree](https://git-scm.com/docs/git-merge-tree)). The loop stops and asks you to run `ralph sync` and resolve, when the conflicted files are among the unit's planned or changed files. Conflicts elsewhere are a warning at start. It never rebases by itself.
 - **BREAKING:** an interface the unit consumes was changed. This is best-effort; see the reliability note in [§11.4](#114-change-ledger-what-changed-by-whom).
 - **OVERLAP:** a landed file overlaps the unit's planned or touched files.
 - **CLAIM-OVERLAP:** a teammate's claim plans the same files.
@@ -571,7 +574,7 @@ At the start of each iteration (phase 3), the harness reads the ledger entries a
 BREAKING and OVERLAP items go into the unit pack as a digest:
 - At most 3,000 characters, one line per item, with pointers rather than file contents. For example:
   `[BREAKING] lookup() → returns Page[] (U037 · dev-b · def456) — you call it in serve/tools/skim.py`
-- The digest says when you last synced, and the loop header shows a reminder when that's older than a threshold (default 12 h). It is only a reminder; the loop still doesn't fetch.
+- The digest says when you last synced, and the loop header shows a reminder when that's older than a threshold (default 12 h). It is only a reminder; the loop still doesn't fetch. "Last synced" is the time of this clone's last fetch (`FETCH_HEAD`), so a plain `git fetch` counts too, and no extra state file is needed.
 - The agent's result includes `acknowledged_impacts`, so resolved items drop out of later digests.
 
 ### 11.6 Team workflow
@@ -833,6 +836,7 @@ These changes stay useful until the new harness replaces the bash loop.
 | P0 | **Done** except the GitHub refs spike (needs a push). | §20 |
 | P1 | **Core done.** `ralph init`, `add-cr`, `start` (build, plan, `--task`, `--dry-run`), `status`, `graph`, `ready`, `unblock`, `set`, `steer`, `pause`, `resume`, `watch`, `migrate` and `doctor` run on the Python harness. `critique`, `refine-plan`, `retro` and `deploy` still run the original bash scripts. | 88 Python tests and the 148 original bash tests pass. A real run of the new harness on a toy project: two units in dependency order, each through gates and review, committed; convergence check passed; tagged. A migrated copy of the real cr2 dry-runs at ~3.6k tokens. |
 | P2 | **Done.** Memory: lessons captured from each result, matched into later packs, promoted with `memory review`, budgets checked by `memory lint` and at start, old notes summarised by `memory decay`. Skills: `skills list`, `lint`, `refresh`, `init --stack`, `eval`, and 1–3 suggestions per pack. Extras: `graph compile --analyze`, `watch --serve`, `[notify]`, review cost in the telemetry. | 127 Python tests and the 148 bash tests pass. Real calls on a toy project (§20, rows 12–14) cost $0.043 in total. |
+| P3a | **Done**, except the optional `ralph pr`. Ledger entries committed with each unit and task. The impact check before each unit: DUPLICATE and CONFLICT stop; BREAKING and OVERLAP go into the pack and can be acknowledged. `ralph sync` (fetch, report, rebase only on yes), `sync push` (review, push only on yes, never forced), and the local views `changes`, `team` and `impact`. | 143 Python tests pass, including the exit check: two clones of a bare remote. B's `sync` shows A's BREAKING and OVERLAP. Nothing is pushed on "no". B's loop refuses to rebuild A's unit and stops on a conflict in its files. A whole iteration with a shared branch configured makes **no network calls**: a git transport trap and a socket patch both stay silent, and the kernel doesn't even import `team.remote`. |
 
 **What building P1 taught us** (each is now handled, with a test):
 - **Unprefixed cross-CR dependencies.** `[CR1 U017, U018, …]` lists several cr1 units, but only the first has the CR prefix. Unknown IDs are now informational instead of blocking forever.
@@ -854,6 +858,12 @@ These changes stay useful until the new harness replaces the bash loop.
 - **No `test-runner` subagent.** The harness runs the gates itself and shows only the failing tail.
 - **"Must always happen" lessons** are proposed as a rule, a `CLAUDE.md` line or a skill. Turning one into a gate or a hook stays a manual edit of `.ralph/config.toml`.
 - **"Does a skill help?"** is partial. `skills list` counts the iterations that used each skill. Comparing turns and gate failures with and without it waits for enough real runs.
+
+**What building P3a taught us:**
+- **A teammate finishing your unit is its own signal.** Their ledger entry for the same unit first showed up as BREAKING and OVERLAP against itself. It's now DUPLICATE, and the loop stops before building the unit twice.
+- **Detection catches what the agent leaves out.** In the two-clone test the agent didn't report its signature change. The `ast` comparison found a new required parameter and marked it breaking.
+- **The network boundary holds by construction.** Fetch and push live only in `team/remote.py`, which only the sync commands import. A test checks that the kernel doesn't load it.
+- **`ralph sync` refuses to rebase** while a loop holds the run lock, or while tracked files have uncommitted changes. The rebase is git's own; on conflicts it stops and tells you how to continue or abort.
 
 ---
 

@@ -51,6 +51,8 @@ class Unit:
     # far, and those among them you had already changed yourself.
     wip_paths: list[str] = field(default_factory=list)
     wip_overlap: list[str] = field(default_factory=list)
+    # Teammates' ledger entries the agent has dealt with, so they leave the pack.
+    acknowledged_impacts: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         data = asdict(self)

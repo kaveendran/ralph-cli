@@ -37,6 +37,14 @@ rule_lines = 50
 skill_lines = 500
 learnings_in_pack = 5      # unreviewed lessons per unit pack
 
+# Working with a team. Only `ralph sync` and `ralph sync push` touch the remote, and only when you run them.
+[team]
+remote = "origin"
+# branch = "main"          # the branch you share; default: your current branch's upstream
+ledger = true              # record what each unit changed in .ralph/ledger/, committed with it
+impact_days = 7            # teammates' changes this recent are checked against each unit
+stale_sync_hours = 12      # remind you to `ralph sync` when your last fetch is older
+
 # Tell you when the loop needs you. Best-effort: a failure never changes what the loop does.
 [notify]
 # webhook = "https://hooks.slack.com/services/…"   # a JSON POST with a `text` field
