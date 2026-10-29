@@ -87,12 +87,13 @@ import json, os, signal, sys, time
 prompt = sys.stdin.read()
 mode = os.environ.get("FAKE_MODE", "ok")
 def emit(event): print(json.dumps(event), flush=True)
-emit({"type": "system", "subtype": "init", "session_id": "s", "claude_code_version": "2.1.311"})
-if mode == "hang":
+if mode == "hang":                 # handle SIGINT before printing anything, so the harness can't beat us to it
     def on_int(*_):
         emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 1})
         sys.exit(130)
     signal.signal(signal.SIGINT, on_int)
+emit({"type": "system", "subtype": "init", "session_id": "s", "claude_code_version": "2.1.311"})
+if mode == "hang":
     time.sleep(60)
 emit({"type": "assistant", "message": {"id": "m", "usage": {"input_tokens": len(prompt)}, "content": []}})
 emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
@@ -132,7 +133,7 @@ class SubprocessRunner(TempDirTestCase):
         os.environ["FAKE_MODE"] = "hang"
         try:
             started = time.monotonic()
-            result = CliRunner(str(self.claude)).run(self.call(silence_seconds=1))
+            result = CliRunner(str(self.claude)).run(self.call(silence_seconds=3))
         finally:
             os.environ.pop("FAKE_MODE")
         self.assertEqual(result.stopped_by, "silence")

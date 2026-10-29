@@ -138,6 +138,8 @@ class CliRunner:
                 return reason
             if session.stats.events != events_seen:
                 events_seen, last_output = session.stats.events, time.monotonic()
+            if call.cancel is not None and call.cancel.is_set():
+                return "interrupted"
             now = time.monotonic()
             if now - started > call.timeout_seconds:
                 return "timeout"

@@ -15,7 +15,7 @@ Needs Python 3.11+, git, and [Claude Code](https://code.claude.com) on your PATH
 
 ```bash
 cd ralph-cli
-./install.sh          # an alias, or a symlink in /usr/local/bin
+./install.sh          # a symlink in ~/.local/bin or /usr/local/bin (or: pipx install .)
 ralph doctor          # checks Claude Code, git and the project config
 ```
 
@@ -24,16 +24,18 @@ ralph doctor          # checks Claude Code, git and the project config
 ```bash
 cd my-project && git init
 ralph init                               # .ralph/config.toml, CLAUDE.md, development/initial/
+#   (--test-infra also writes quiet test scripts and an isolated docker-compose.test.yml)
 #   …write development/initial/spec/spec.md (number its sections: §1, §1.1, …)
 #   …check the gates (your test commands) in .ralph/config.toml
 git switch -c ralph/initial              # the loop won't commit to main
 ralph start --mode plan --cr initial     # Claude writes the plan; the harness compiles it into units
+ralph critique                           # (optional) 8 experts review the plan; refine-plan applies fixes
 ralph graph                              # review the units and their order
 ralph start --cr initial                 # the build loop
 ralph watch                              # (another terminal) follow it live
 ```
 
-`ralph init --brief "what you want to build" --stack "Python/FastAPI"` asks Claude to draft the spec for you to review. Later changes go through `ralph add-cr --number 2 --title "…"`.
+`ralph init --brief "what you want to build" --stack "Python/FastAPI"` asks Claude to draft the spec for you to review. Later changes go through `ralph add-cr --number 2 --title "…"` (`--prior-cr 1` links the CR it builds on). `ralph status` tells you the next step at any point.
 
 For a project that used the previous loop, run `ralph migrate --cr N --dry-run` to see what would change, then `ralph migrate --cr N` on a branch.
 
@@ -96,8 +98,10 @@ ralph sync push         # review what would be published, then push
 | `ralph skills eval [name]` | Run each skill's scenarios (`.claude/skills/<name>/evals/*.json`) through Claude: did it use the skill, and does the answer contain what it should? |
 | `ralph migrate --cr N` | Move a CR from the previous loop (keeps its statuses and notes) |
 | `ralph doctor [--live]` | Check the setup; `--live` makes one tiny real call (about a cent) |
-| `ralph critique`, `refine-plan`, `retro`, `deploy` | Plan review and delivery workflows (still the original bash scripts) |
-| `ralph legacy <command>` | Run any original bash command, e.g. the previous loop for a CR that isn't migrated |
+| `ralph critique` | 8 experts review the plan (architect, tester, risk, your stack, test infrastructure, security, performance, docs); a lead merges them into one CRITICAL / IMPORTANT / SUGGESTED report in `development/<cr>/critique/` |
+| `ralph refine-plan` | Critique → proposed plan edits → you approve, skip or stop → critique again, at most `--max 3` rounds. Edits come back per unit, so units it doesn't touch stay exactly as they were |
+| `ralph retro` | After the build: plan vs reality, blocker patterns across CRs, test-coverage gaps, plus draft `RELEASE_NOTES.md` and `PR_DESCRIPTION.md` |
+| `ralph deploy scaffold` / `critique` / `refine` | Draft a deploy plan, runbook, rollback and verification checklist from the plan (environment details stay `<TODO: …>`); 6 deploy experts and a peer review give a GO / NO-GO; refine applies fixes you approve |
 
 ## Configuration
 
@@ -161,31 +165,29 @@ log/                                   ignored: iterations.jsonl and per-iterati
 - **Runs are hermetic and bounded**, and the harness commits only the unit's own files.
 - **The guardrail hooks prevent accidents, not deliberate misuse.** The agent runs with permissions skipped so it can work unattended, so for overnight or unattended runs use a container or the OS sandbox.
 
+## Review workflows
+
+`critique`, `refine-plan`, `retro` and `deploy` are a few read-only Claude calls each, at most four at a time, with `--model` to choose the model (default `runner.model_build`). The experts can open files with Read, Grep and Glob, but can't edit or run anything. What they're given stays bounded: a long plan becomes an outline with pointers into the file, and the retro reads unit state, metrics, the start of each unit's notes and the git log, not the full history. Ctrl-C stops every call. Logs are in `log/<workflow>-<time>/`.
+
+## Team telemetry (optional)
+
+Claude Code can export its own OpenTelemetry metrics and events (tokens, cost, tool results, compactions). Turn it on for every run ralph starts:
+
+```toml
+[telemetry]
+otlp_endpoint = "http://localhost:4317"
+protocol = "grpc"          # or http/json, http/protobuf
+team = "payments"          # becomes the team.id attribute
+```
+
+ralph adds `developer` and `ralph.cr` attributes and shorter export intervals. Iterations join on `session.id`, which `log/iterations.jsonl` records too. Put credentials in `OTEL_EXPORTER_OTLP_HEADERS` in your environment, not in the config file. Prompt and tool content stays redacted unless you set Claude Code's `OTEL_LOG_*` variables yourself ([monitoring](https://code.claude.com/docs/en/monitoring-usage)).
+
 ## Development
 
 ```bash
-PYTHONPATH=. python3 -P -m unittest discover -s tests -t .   # the harness (stdlib only)
-bash test/e2e.sh                                              # the original bash commands
+PYTHONPATH=. python3 -P -m unittest discover -s tests -t .   # stdlib only, no Claude calls
 ```
 
-## The previous loop
+## Projects from the previous loop
 
-The original bash commands are still here, under `commands/`, and run with `ralph legacy <command>` (or `RALPH_LEGACY=1 ralph <command>`). `ralph legacy start --cr N` is the previous loop, already improved with the same quick fixes:
-- compaction at 200k
-- hermetic runs
-- turn and budget caps
-- one unit per iteration
-- the explorer subagent
-- telemetry in `log/index.jsonl`
-- no automatic pushes
-
-Its extra flags:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--max-turns N` / `--max-budget USD` | `200` / `30` (plan: `300` / `60`) | Caps per iteration |
-| `--compact-window N` | `200000` | Auto-compact window |
-| `--setting-sources LIST` | `project,local` | Claude settings to load |
-| `--no-hermetic` | — | Use your full personal Claude setup |
-| `--push` | off | Push after each iteration |
-| `--dry-run` | — | Show the next unit, prompt size and command |
+The previous bash loop is on ralph-cli's `main` branch. To move a CR over, run `ralph migrate --cr N --dry-run` to see what would change, then `ralph migrate --cr N` on a branch: it keeps each unit's status and notes, and leaves the old files in place.

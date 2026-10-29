@@ -27,10 +27,11 @@ from ralph.memory.learnings import read_inbox
 from ralph.memory.learnings import relevant as relevant_lessons
 from ralph.memory.lint import lint_memory
 from ralph.model.plan import Plan, parse_plan
-from ralph.model.spec import Spec, parse_spec
+from ralph.model.spec import Spec, acceptance_criteria, parse_spec
 from ralph.model.store import UnitStore
 from ralph.model.unit import Status, Unit
 from ralph.monitor.notify import Notifier
+from ralph.monitor.otel import otel_env
 from ralph.monitor.signals import SignalMonitor
 from ralph.monitor.telemetry import IterationRecord, append_record, now_iso
 from ralph.paths import ProjectPaths
@@ -321,7 +322,8 @@ class Kernel:
             hermetic=runner_config.hermetic,
             mcp_config=project_mcp_config(self.root, run_dir) if runner_config.hermetic else None,
             setting_sources=runner_config.setting_sources,
-            env=agent_env(self.root, runner_config.compact_window, runner_config.hermetic),
+            env={**agent_env(self.root, runner_config.compact_window, runner_config.hermetic),
+                 **otel_env(self.config.telemetry, developer=self.developer, cr=self.cr.name)},
         )
 
     def _plan(self) -> Plan | None:
@@ -637,7 +639,7 @@ class Kernel:
 
     def _converge(self, units: dict[str, Unit]) -> bool:
         spec = parse_spec(self.cr.spec)
-        criteria = _acceptance_criteria(spec)
+        criteria = acceptance_criteria(spec)
         if not criteria:
             ui.info("  No acceptance criteria found in the spec; skipping the convergence check.")
             return False
@@ -705,13 +707,3 @@ def _notes_for(judgement: Judgement, evidence: Evidence, report: dict | None) ->
     if report and report.get("summary"):
         parts.append(f"The agent said: {report['summary']}")
     return "\n\n".join(parts)
-
-
-def _acceptance_criteria(spec: Spec | None) -> str:
-    """The spec's acceptance criteria: its "acceptance criteria" section, else lines with AC- IDs."""
-    if spec is None:
-        return ""
-    for section in spec.sections.values():
-        if "acceptance criteria" in section.title.lower():
-            return section.text
-    return spec.lines_mentioning("AC", context=0) if any("AC-" in line for line in spec.lines) else ""

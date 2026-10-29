@@ -83,6 +83,16 @@ def _subsection(lines: list[str], title_prefix: str) -> list[str]:
     return found
 
 
+def blocks(text: str) -> list[tuple[int, str]]:
+    """The plan's level-2 blocks as (1-based start line, text including the heading)."""
+    return [(start + 1, "\n".join(block)) for start, block in _blocks(text.splitlines())]
+
+
+def subsection(section: str, title_prefix: str) -> str:
+    """The text of a unit's `### <title_prefix>…` subsection, e.g. "Rollback"."""
+    return "\n".join(_subsection(section.splitlines(), title_prefix)).strip()
+
+
 def _fields(lines: list[str]) -> dict[str, str]:
     values = {}
     for line in lines:

@@ -5,6 +5,8 @@ import os
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -102,9 +104,17 @@ def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def no_background_git(root: Path) -> None:
+    """Recent git starts maintenance in the background after commits and pushes;
+    in a test repo it can still be writing packs while the test deletes the folder."""
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false"), ("receive.autogc", "false")):
+        git(root, "config", key, value)
+
+
 def make_repo(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     git(root, "init", "-q", "-b", "work")
+    no_background_git(root)
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Test")
     (root / "README.md").write_text("project\n")
@@ -159,6 +169,46 @@ class ScriptedRunner:
         if not self.steps:
             raise AssertionError("the loop asked for more runs than the test scripted")
         return self.steps.pop(0)(call)
+
+
+class PromptRunner:
+    """Answers each call by the first rule whose marker appears in its prompt.
+
+    For the parallel workflow calls, which arrive in any order. An answer is a
+    string (the text result), a dict (a structured result), or a list of those
+    (one per matching call, in turn). It records how many calls overlapped.
+    """
+
+    def __init__(self, *rules, delay: float = 0.05):
+        self.rules = [(marker, list(answer) if isinstance(answer, list) else answer) for marker, answer in rules]
+        self.delay = delay
+        self.calls: list[AgentCall] = []
+        self.active = self.most_at_once = 0
+        self._lock = threading.Lock()
+
+    def run(self, call: AgentCall, on_event=None) -> AgentResult:
+        with self._lock:
+            self.calls.append(call)
+            self.active += 1
+            self.most_at_once = max(self.most_at_once, self.active)
+            answer = next((a for marker, a in self.rules if marker in call.prompt), None)
+            if isinstance(answer, list):
+                answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        try:
+            time.sleep(self.delay)        # let parallel calls overlap
+            if answer is None:
+                raise AssertionError(f"no rule matches the prompt: {call.prompt[:80]!r}")
+            if isinstance(answer, dict):
+                event = {"type": "result", "subtype": "success", "total_cost_usd": 0.01, "structured_output": answer}
+            else:
+                event = {"type": "result", "subtype": "success", "total_cost_usd": 0.01, "result": answer}
+            return agent_result(call, [{"type": "system", "subtype": "init"}, event])
+        finally:
+            with self._lock:
+                self.active -= 1
+
+    def prompts(self, marker: str) -> list[str]:
+        return [c.prompt for c in self.calls if marker in c.prompt]
 
 
 def done_step(unit: str, files: dict[str, str], handoff: str = "", issues=(), commit: bool = False, learnings=()):

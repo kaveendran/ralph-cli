@@ -72,6 +72,16 @@ def parse_spec(path: Path) -> Spec | None:
     return parse_spec_text(path.read_text(encoding="utf-8"), path)
 
 
+def acceptance_criteria(spec: Spec | None) -> str:
+    """The spec's acceptance criteria: its "acceptance criteria" section, else lines with AC- IDs."""
+    if spec is None:
+        return ""
+    for section in spec.sections.values():
+        if "acceptance criteria" in section.title.lower():
+            return section.text
+    return spec.lines_mentioning("AC", context=0) if any("AC-" in line for line in spec.lines) else ""
+
+
 @dataclass
 class Excerpts:
     text: str

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ralph-cli"
+dynamic = ["version"]
+description = "A meta-harness for Claude Code: one bounded, verified unit of work per iteration."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []          # stdlib only; Claude Code and git must be on PATH
+
+[project.scripts]
+ralph = "ralph.cli:entry"
+
+[tool.setuptools.dynamic]
+version = { attr = "ralph.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["ralph*"]
+
+[tool.setuptools.package-data]
+ralph = ["prompts/*.md", "prompts/*/*.md", "templates/*", "templates/*/*", "schemas/*.json"]

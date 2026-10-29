@@ -25,7 +25,8 @@ from ralph.team.impact import ImpactReport, Impact, classify, merge_conflicts, s
 from ralph.team.ledger import LedgerEntry, from_others, new_entry, read_local, read_pending, write_entry
 from ralph.vcs.git import Git
 from tests import helpers
-from tests.helpers import ScriptedRunner, TempDirTestCase, agent_result, done_step, git, make_repo, result_events
+from tests.helpers import (ScriptedRunner, TempDirTestCase, agent_result, done_step, git, make_repo,
+                           no_background_git, result_events)
 
 LOOKUP_V1 = "def lookup(query):\n    return [query]\n"
 LOOKUP_V2 = "def lookup(query, page):\n    return [query, page]\n"
@@ -189,6 +190,7 @@ class TwoClones(TempDirTestCase):
         helpers.fake_claude_on_path(self.tmp / "bin")
         self.origin = self.tmp / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
+        no_background_git(self.origin)
         self.a = make_repo(self.tmp / "a")
         cr = ProjectPaths(self.a).cr("cr1")
         (cr.dir / "plan").mkdir(parents=True)
@@ -205,6 +207,7 @@ class TwoClones(TempDirTestCase):
         git(self.a, "push", "-q", "-u", "origin", "work:main")
         self.b = self.tmp / "b"
         subprocess.run(["git", "clone", "-q", "-b", "main", str(self.origin), str(self.b)], check=True)
+        no_background_git(self.b)
         git(self.b, "switch", "-qc", "work", "--track", "origin/main")
         git(self.b, "config", "user.email", "b@example.com")
         git(self.b, "config", "user.name", "Dev B")

@@ -17,7 +17,7 @@ from ralph.commands.migrate import GITIGNORE_LINES, detect_gates, render_config
 from ralph.errors import RalphError
 from ralph.fsutil import read_text, write_text_atomic
 from ralph.paths import ProjectPaths, find_project_root, normalise_cr
-from ralph.prompts import render, render_template
+from ralph.prompts import TEMPLATES_DIR, render, render_template
 from ralph.runner import compat
 from ralph.runner.base import AgentCall
 from ralph.runner.cli_backend import CliRunner
@@ -39,6 +39,8 @@ def register(subparsers) -> None:
     i.add_argument("--type", choices=TYPES, help="implementation type")
     i.add_argument("--stack", default="", help="tech stack, used when Claude drafts the spec")
     i.add_argument("--brief", default="", help="goals and features; with this, Claude drafts the initial spec")
+    i.add_argument("--test-infra", action="store_true",
+                   help="also write quiet test scripts and an isolated docker-compose.test.yml (the gates use them)")
     i.set_defaults(handler=run_init)
 
     a = subparsers.add_parser("add-cr", help="add a change request")
@@ -46,13 +48,15 @@ def register(subparsers) -> None:
     a.add_argument("--title", default="", help="short title")
     a.add_argument("--type", choices=TYPES, default="feature", help="implementation type")
     a.add_argument("--spec-file", help="copy this file in as the spec")
+    a.add_argument("--prior-cr", help="the CR this one builds on, e.g. 3 (linked from its spec and instructions)")
     a.add_argument("--notes", default="(none)", help="special notes included in every unit pack")
     a.set_defaults(handler=run_add_cr)
 
 
 def create_cr(project: ProjectPaths, name: str, title: str, impl_type: str, notes: str,
-              spec_source: Path | None = None, spec_text: str = "") -> list[Path]:
+              spec_source: Path | None = None, spec_text: str = "", prior: str = "") -> list[Path]:
     cr = project.cr(name)
+    prior_spec = project.cr(prior).spec.relative_to(project.root) if prior else None
     created = []
 
     def write(path: Path, text: str) -> None:
@@ -64,7 +68,8 @@ def create_cr(project: ProjectPaths, name: str, title: str, impl_type: str, note
         ui.info(f"  create  {path.relative_to(project.root)}")
 
     spec = spec_text or (spec_source.read_text(encoding="utf-8") if spec_source else
-                         render_template("spec.md", CR_NAME=name, TITLE=title or name, DATE=date.today().isoformat()))
+                         render_template("spec.md", CR_NAME=name, TITLE=title or name, DATE=date.today().isoformat(),
+                                         BASELINE=f" It builds on {prior}: see `{prior_spec}`." if prior else ""))
     write(cr.spec, spec)
     write(cr.plan_prompt, render_template(
         "spec-planning.md", SPEC_PATH=str(cr.spec.relative_to(project.root)), IMPLEMENTATION_TYPE=impl_type,
@@ -72,9 +77,40 @@ def create_cr(project: ProjectPaths, name: str, title: str, impl_type: str, note
         SPECIAL_NOTES=notes))
     write(cr.instructions, render_template(
         "instructions.md", CR_NAME=name, TECH_CONSTRAINTS=CONSTRAINTS.get(impl_type, "- (list them here)"),
+        BASELINE=f"\n## Baseline\n\nThis CR builds on {prior}. Its spec, `{prior_spec}`, describes what already "
+                 "exists; don't re-implement it.\n" if prior else "",
         SPECIAL_NOTES=notes))
     (cr.dir / "plan").mkdir(parents=True, exist_ok=True)
     return created
+
+
+TEST_INFRA_DIR = TEMPLATES_DIR / "test-infra"
+BACKEND_TYPES = ("backend+frontend", "backend", "api", "database")
+FRONTEND_TYPES = ("backend+frontend", "frontend")
+
+
+def write_test_infra(project: ProjectPaths, impl_type: str) -> list[str]:
+    """Quiet, fail-fast test scripts and an isolated test stack. Existing files are kept."""
+    files = {"scripts/test-unit.sh": "test-unit.sh"}
+    if impl_type in BACKEND_TYPES or impl_type in FRONTEND_TYPES:
+        files["docker-compose.test.yml"] = "docker-compose.test.yml"
+    if impl_type in BACKEND_TYPES:
+        files["scripts/test-api.sh"] = "test-api.sh"
+    if impl_type in FRONTEND_TYPES:
+        files.update({"scripts/test-e2e.sh": "test-e2e.sh", "e2e/playwright.config.ts": "playwright.config.ts",
+                      ".ralph/mcp.json": "mcp.json"})       # the Playwright MCP server, for loop runs
+    written = []
+    for target, template in files.items():
+        path = project.root / target
+        if path.exists():
+            ui.info(f"  skip    {target} (exists)")
+            continue
+        write_text_atomic(path, (TEST_INFRA_DIR / template).read_text(encoding="utf-8"))
+        if path.suffix == ".sh":
+            path.chmod(0o755)
+        ui.info(f"  create  {target}")
+        written.append(target)
+    return written
 
 
 def ensure_project_files(project: ProjectPaths, name: str, description: str) -> None:
@@ -120,6 +156,10 @@ def run_init(args) -> int:
     description = args.description or ui.ask("One-line description", "")
     impl_type = args.type or ui.choose("Implementation type", list(TYPES), default=len(TYPES) - 1)
     ui.header(f"init — {name}", str(root))
+    if args.test_infra:
+        written = write_test_infra(project, impl_type)
+        if written and project.config.exists():
+            ui.warn("The config already exists, so add the new scripts to [verify.gates] yourself.")
     ensure_project_files(project, name, description)
     spec_text = draft_spec(root, name, description, impl_type, args.stack, args.brief) if args.brief else ""
     create_cr(project, "initial", name, impl_type, "(none)", spec_text=spec_text)
@@ -141,8 +181,11 @@ def run_add_cr(args) -> int:
     spec_source = Path(args.spec_file) if args.spec_file else None
     if spec_source and not spec_source.exists():
         raise RalphError(f"--spec-file {spec_source} doesn't exist.")
+    prior = normalise_cr(args.prior_cr) if args.prior_cr else ""
+    if prior and not project.cr(prior).dir.is_dir():
+        raise RalphError(f"--prior-cr {args.prior_cr}: there's no {project.cr(prior).dir.relative_to(project.root)}.")
     ui.header(f"add-cr — {name}", args.title)
-    create_cr(project, name, args.title, args.type, args.notes, spec_source)
+    create_cr(project, name, args.title, args.type, args.notes, spec_source, prior=prior)
     ui.info("")
     ui.info(f"  Next: write {project.cr(name).spec.relative_to(project.root)}, then "
             f"'ralph start --mode plan --cr {name}'.")

@@ -21,8 +21,8 @@ def load_cr(project: ProjectPaths, given: str | None) -> tuple[CrPaths, UnitStor
 
 def require_units(cr: CrPaths, store: UnitStore) -> dict[str, Unit]:
     if not store.exists():
-        hint = (f"This CR uses the old progress file. Run 'ralph migrate --cr {cr.name}' (on a branch), "
-                f"or 'ralph legacy start --cr {cr.name}' for the previous loop."
+        hint = (f"This CR uses the old progress file. Run 'ralph migrate --cr {cr.name} --dry-run' to see "
+                f"what would change, then 'ralph migrate --cr {cr.name}' (on a branch)."
                 if cr.legacy_progress.exists() else
                 f"Write a plan with 'ralph start --mode plan --cr {cr.name}', then 'ralph graph compile'.")
         raise RalphError(f"{cr.name} has no units yet.", hint)

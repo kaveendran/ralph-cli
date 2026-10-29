@@ -83,6 +83,16 @@ class TeamConfig:
 
 
 @dataclass
+class TelemetryConfig:
+    """Claude Code's own OpenTelemetry export for every run (docs/meta-harness-plan.md §10.4).
+    Off until `otlp_endpoint` is set. Put credentials in OTEL_EXPORTER_OTLP_HEADERS in your
+    environment, never in this file."""
+    otlp_endpoint: str = ""             # e.g. "http://localhost:4317"
+    protocol: str = "grpc"              # grpc | http/json | http/protobuf
+    team: str = ""                      # sent as the team.id resource attribute
+
+
+@dataclass
 class Config:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
@@ -90,6 +100,7 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     team: TeamConfig = field(default_factory=TeamConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
 
 def _apply(target, values: dict, where: str) -> None:
@@ -115,7 +126,8 @@ def load_config(config_path: Path) -> Config:
         raise RalphError(f"{config_path} isn't valid TOML: {problem}") from None
 
     sections = {"runner": config.runner, "verify": config.verify, "loop": config.loop,
-                "memory": config.memory, "notify": config.notify, "team": config.team}
+                "memory": config.memory, "notify": config.notify, "team": config.team,
+                "telemetry": config.telemetry}
     unknown = sorted(set(data) - set(sections))
     if unknown:
         raise RalphError(f"Unknown section(s) in {config_path}: {', '.join(unknown)}",

@@ -1,6 +1,6 @@
 # {{CR_NAME}} specification — {{TITLE}}
 
-Created {{DATE}}. Number the sections (`## 1. Overview`, `### 1.1 …`): the harness cites them as `§1.1` and gives each unit only the sections it needs.
+Created {{DATE}}.{{BASELINE}} Number the sections (`## 1. Overview`, `### 1.1 …`): the harness cites them as `§1.1` and gives each unit only the sections it needs.
 
 ## 1. Overview
 What this change does and why, in 2–3 paragraphs.

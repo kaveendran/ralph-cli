@@ -147,7 +147,7 @@ def normalise_cr(value: str) -> str:
 
 def resolve_cr(project: ProjectPaths, given: str | None) -> str:
     """The CR to work on: the given one, else the latest CR that has units,
-    else the latest CR that has a plan."""
+    else the latest that has a plan, else the latest that has a spec (a new CR)."""
     if given:
         name = normalise_cr(given)
         if not project.cr(name).dir.is_dir():
@@ -155,7 +155,7 @@ def resolve_cr(project: ProjectPaths, given: str | None) -> str:
                              f"Create it with 'ralph add-cr --number {name[2:] or 'N'}'.")
         return name
     names = project.cr_names()
-    for check in (lambda c: c.units_dir.is_dir(), lambda c: c.plan.exists()):
+    for check in (lambda c: c.units_dir.is_dir(), lambda c: c.plan.exists(), lambda c: c.spec.exists()):
         found = [n for n in names if check(project.cr(n))]
         if found:
             return found[-1]

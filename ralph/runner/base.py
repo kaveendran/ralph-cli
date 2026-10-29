@@ -1,5 +1,6 @@
 """What a runner is asked to do, and what it reports back."""
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -27,6 +28,9 @@ class AgentCall:
     mcp_config: Path | None = None
     setting_sources: str = "project,local"
     env: dict[str, str] = field(default_factory=dict)
+    # Set from another thread to stop the run (parallel workflow calls, which a
+    # terminal Ctrl-C can't reach: each runs in its own process group).
+    cancel: threading.Event | None = None
 
 
 @dataclass

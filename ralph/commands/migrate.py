@@ -9,9 +9,9 @@ Reads what the old loop left behind and writes the harness's files:
   those now); every removed line is listed so you can review it;
 - .ralph/config.toml with gates found in scripts/test-*.sh, if missing;
 - .gitignore entries for the harness's runtime files.
-The old progress file and build.md are left as they are, so the old loop
-(`ralph legacy start`) still works. `--dry-run` shows all of this without
-writing anything. Run it on a branch.
+The old progress file and build.md are left as they are, so nothing is lost
+(the previous bash loop is on ralph-cli's main branch if you need it).
+`--dry-run` shows all of this without writing anything. Run it on a branch.
 """
 
 import re

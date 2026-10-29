@@ -1,45 +1,35 @@
-"""The `ralph` command line.
-
-Commands that exist in the harness run here. The plan-review and delivery
-workflows (critique, refine-plan, retro, deploy) still run as the original
-bash scripts until they're ported (P5), and `ralph legacy <command>` runs
-any original command, e.g. the previous loop for a CR that isn't migrated.
-"""
+"""The `ralph` command line: one module per group of commands, in ralph/commands/."""
 
 import argparse
-import os
-import subprocess
 import sys
 
 from ralph import __version__, ui
 from ralph.commands import (control, doctor, graph, memory, migrate, scaffold, skills, start, status, team, units,
-                            watch)
+                            watch, workflows)
 from ralph.errors import RalphError
-from ralph.prompts import PACKAGE_DIR
 
-REPO_DIR = PACKAGE_DIR.parent
-BASH_COMMANDS = {"critique", "refine-plan", "retro", "deploy"}
-LEGACY_COMMANDS = {"init", "add-cr", "status", "start", "watch", *BASH_COMMANDS}
-COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, team, memory, skills, migrate, doctor)
+COMMAND_MODULES = (scaffold, start, status, graph, units, control, watch, workflows, team, memory, skills,
+                   migrate, doctor)
 
 EPILOG = """\
 typical workflow:
   ralph init                         set up the project, then write development/initial/spec/spec.md
   ralph skills init --stack "…"      (optional) draft starter skills for your stack, then review them
   ralph start --mode plan --cr initial
+  ralph critique                     (optional) 8 experts review the plan; ralph refine-plan applies fixes
   ralph graph                        review the units and their order
   ralph start --cr initial           one bounded, verified unit per iteration
   ralph watch                        (another terminal) follow it live; --serve for a browser view
   ralph status                       progress, blocked units, per-unit time/cost/context
   ralph memory review                now and then: promote the lessons the agent reported
+  ralph retro / ralph deploy …       when the CR is built: look back, then prepare the deploy
 
 with a team (manual; the loop itself never fetches or pushes):
   ralph sync                         fetch the shared branch, see what affects your units, rebase if you agree
   ralph sync push                    review what would be published, then push it
   ralph changes / team / impact ID   what changed and who it affects, as of your last sync
 
-still run by the original bash scripts: critique, refine-plan, retro, deploy
-the previous loop, for CRs that aren't migrated: ralph legacy start --cr N
+a project from the previous bash loop: ralph migrate --cr N --dry-run, then ralph migrate --cr N
 """
 
 
@@ -51,31 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(title="commands", metavar="<command>")
     for module in COMMAND_MODULES:
         module.register(subparsers)
-    for name in sorted(BASH_COMMANDS):
-        subparsers.add_parser(name, help="(runs the original bash script)", add_help=False)
-    subparsers.add_parser("legacy", help="run an original bash command, e.g. 'ralph legacy start --cr 2'",
-                          add_help=False)
     return parser
 
 
-def run_bash(command: str, args: list[str]) -> int:
-    script = REPO_DIR / "commands" / f"{command}.sh"
-    if command not in LEGACY_COMMANDS or not script.exists():
-        ui.error(f"There's no original command '{command}'.",
-                 f"Original commands: {', '.join(sorted(LEGACY_COMMANDS))}")
-        return 1
-    return subprocess.call(["bash", str(script), *args], env={**os.environ, "RALPH_LEGACY": "1"})
-
-
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in BASH_COMMANDS:
-        return run_bash(argv[0], argv[1:])
-    if argv and argv[0] == "legacy":
-        if len(argv) < 2:
-            ui.error("Say which command, e.g. 'ralph legacy start --cr 2'.")
-            return 1
-        return run_bash(argv[1], argv[2:])
-
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):
@@ -91,5 +60,10 @@ def main(argv: list[str]) -> int:
         return 130
 
 
-if __name__ == "__main__":
+def entry() -> None:
+    """The `ralph` console script, when installed with pip or pipx."""
     sys.exit(main(sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    entry()

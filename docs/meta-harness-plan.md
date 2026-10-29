@@ -493,7 +493,7 @@ The event shapes come from [headless](https://code.claude.com/docs/en/headless) 
 - **Notifications** (P2, `[notify]`): webhook, Slack or a script on stop, block, usage limit or completion. They are best-effort, so a failure never changes the loop's outcome.
 
 ### 10.4 Team telemetry (optional, OpenTelemetry)
-- When `[telemetry] otlp_endpoint` is set, the runner exports Claude Code's **native** OTel for every run ([monitoring-usage](https://code.claude.com/docs/en/monitoring-usage)).
+- When `[telemetry] otlp_endpoint` is set, the runner exports Claude Code's **native** OTel for every run ([monitoring-usage](https://code.claude.com/docs/en/monitoring-usage)). Built in P5 (`ralph/monitor/otel.py`). The protocol must be set, because Claude Code has no default, and attribute values are percent-encoded, because they can't contain spaces.
 - **Variables set:** `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_METRICS_EXPORTER=otlp`, `OTEL_LOGS_EXPORTER=otlp`, plus the protocol and endpoint.
 - **Resource attributes:** `OTEL_RESOURCE_ATTRIBUTES=team.id=…,developer=…,ralph.loop=…`. Keep these to **low-cardinality keys only**. Iterations are joined through `session.id`, which ralph records.
 - **Data you get:** the metrics `claude_code.token.usage`, `cost.usage`, `lines_of_code.count` and `commit.count`, and the events `api_request`, `api_error`, `tool_result` and `compaction` (with before and after tokens).
@@ -837,6 +837,7 @@ These changes stay useful until the new harness replaces the bash loop.
 | P1 | **Core done.** `ralph init`, `add-cr`, `start` (build, plan, `--task`, `--dry-run`), `status`, `graph`, `ready`, `unblock`, `set`, `steer`, `pause`, `resume`, `watch`, `migrate` and `doctor` run on the Python harness. `critique`, `refine-plan`, `retro` and `deploy` still run the original bash scripts. | 88 Python tests and the 148 original bash tests pass. A real run of the new harness on a toy project: two units in dependency order, each through gates and review, committed; convergence check passed; tagged. A migrated copy of the real cr2 dry-runs at ~3.6k tokens. |
 | P2 | **Done.** Memory: lessons captured from each result, matched into later packs, promoted with `memory review`, budgets checked by `memory lint` and at start, old notes summarised by `memory decay`. Skills: `skills list`, `lint`, `refresh`, `init --stack`, `eval`, and 1–3 suggestions per pack. Extras: `graph compile --analyze`, `watch --serve`, `[notify]`, review cost in the telemetry. | 127 Python tests and the 148 bash tests pass. Real calls on a toy project (§20, rows 12–14) cost $0.043 in total. |
 | P3a | **Done**, except the optional `ralph pr`. Ledger entries committed with each unit and task. The impact check before each unit: DUPLICATE and CONFLICT stop; BREAKING and OVERLAP go into the pack and can be acknowledged. `ralph sync` (fetch, report, rebase only on yes), `sync push` (review, push only on yes, never forced), and the local views `changes`, `team` and `impact`. | 143 Python tests pass, including the exit check: two clones of a bare remote. B's `sync` shows A's BREAKING and OVERLAP. Nothing is pushed on "no". B's loop refuses to rebuild A's unit and stops on a conflict in its files. A whole iteration with a shared branch configured makes **no network calls**: a git transport trap and a socket patch both stay silent, and the kernel doesn't even import `team.remote`. |
+| P5 | **Done.** The review and delivery workflows run on the harness, and the bash code is gone (details below). | The Python tests pass and replace `test/e2e.sh`. Real Haiku runs of `critique` and `deploy scaffold` on a toy project are in §20, rows 15–16. |
 
 **What building P1 taught us** (each is now handled, with a test):
 - **Unprefixed cross-CR dependencies.** `[CR1 U017, U018, …]` lists several cr1 units, but only the first has the CR prefix. Unknown IDs are now informational instead of blocking forever.
@@ -858,6 +859,22 @@ These changes stay useful until the new harness replaces the bash loop.
 - **No `test-runner` subagent.** The harness runs the gates itself and shows only the failing tail.
 - **"Must always happen" lessons** are proposed as a rule, a `CLAUDE.md` line or a skill. Turning one into a gate or a hook stays a manual edit of `.ralph/config.toml`.
 - **"Does a skill help?"** is partial. `skills list` counts the iterations that used each skill. Comparing turns and gate failures with and without it waits for enough real runs.
+
+**P5 (built 2026-10-29, after P3a; P3b and P4 stay unbuilt until real use shows they're needed):**
+- **Ported:** `critique`, `refine-plan`, `retro` and `deploy scaffold | critique | refine` run on `ralph/workflows/`:
+  - a council of read-only calls, at most 4 at once, that Ctrl-C actually stops;
+  - bounded inputs: a long plan becomes an outline, and retro reads metrics and note heads;
+  - one human-gated refine loop for both refine commands.
+- **Also ported:** the e2e scenarios that still apply (`tests/test_scaffold.py`), the `[telemetry]` OTel export from §10.4, `init --test-infra` (quiet, fail-fast scripts), `add-cr --prior-cr`, and `status` guidance before any units exist.
+- **Removed:** the bash commands, libraries, templates and `test/e2e.sh`. `ralph legacy` is gone; the previous loop lives on `main`, and `ralph migrate` moves a CR over.
+
+**What building P5 taught us:**
+- **The old Ctrl-C didn't stop the experts.** Each `claude` runs in its own process group, so the terminal's Ctrl-C never reached it. Calls now carry a cancel signal the runner checks every second.
+- **The old retro cut its PR description after one line.** The draft's own `## Summary` heading ended the awk split. Reports are now split at the known section headings only.
+- **refine-plan no longer reprints the plan.** Claude returns per-unit edits, and the harness splices them in and refuses renames, renumbering and lost units. A 278 KB plan used to come back in full, or truncated.
+- **Re-critiquing after a skipped revision was wasted spend.** The document hadn't changed, so a report newer than it is reused.
+- **`status` failed on a brand-new project.** CR resolution only counted CRs with units or a plan, so `ralph status` right after `ralph init` said "no change request found". It now falls back to the latest CR with a spec, and says which of the three steps you're at.
+- **Bash `init` wrote `--no-cov` into the unit test script,** which errors when pytest-cov isn't installed. The new scripts don't need it.
 
 **What building P3a taught us:**
 - **A teammate finishing your unit is its own signal.** Their ledger entry for the same unit first showed up as BREAKING and OVERLAP against itself. It's now DUPLICATE, and the loop stops before building the unit twice.
@@ -883,7 +900,7 @@ These changes stay useful until the new harness replaces the bash loop.
 ---
 
 ## 20. Spike results (P0)
-These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session. Rows 12–14 were added while building P2.
+These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in total), each in a throwaway directory. Claude Code was **2.1.311**: it updated itself from 2.1.306 during the session. Rows 12–14 were added while building P2, and rows 15–16 while building P5.
 
 | # | Question | Result | What it changes |
 |---|---|---|---|
@@ -901,6 +918,8 @@ These ran on 2026-10-29 with real but tiny Claude calls (Haiku, a few cents in t
 | 12 | P2: can a no-tools call draft a usable skill? | **Yes.** `skills init` on a FastAPI + Pydantic toy project returned one 97-line skill through `--json-schema` in 2 turns, $0.039 (Sonnet, the default for analysis calls). It pinned `fastapi` and `pydantic` and passed `skills lint`. | Drafts still need human review; the skill marks open choices with "Decide:". |
 | 13 | P2: do project skills load under the hermetic flags, and does the stream show which one ran? | **Yes.** With `--tools Skill,Read,Grep,Glob`, the init event lists the project skill (plus the bundled ones, see row 10) and no MCP servers. Using it shows as a `tool_use` named `Skill` with `input.skill` set to its name. The eval passed: 3 turns, $0.002 on Haiku. | `skills eval` and the `skills_invoked` telemetry rely on this shape. |
 | 14 | P2: does the complexity analysis catch what the size check misses? | **Yes.** See "What building P2 taught us". Haiku, $0.0016. | `--analyze` stays advisory: it reports and changes nothing. |
+| 15 | P5: do the parallel read-only experts work in print mode, without skipping permissions? | **Yes.** `ralph critique --model haiku` on a 3-unit toy plan ran 7 experts, at most 4 at once, then the lead. Two experts opened files themselves (Glob, Grep, Read), with 0 permission denials and no MCP servers. Total $0.03. | The lead noticed the experts couldn't see the spec's AC-001/AC-002, so plan experts now get the spec's acceptance criteria too. |
+| 16 | P5: does a scaffold come back as clean documents? | **Yes.** `ralph deploy scaffold --model haiku` returned all 4 through the `document` schema, with no chat preamble. The rollback doc kept U001's Rollback Plan, ran in reverse order, and marked U002/U003's missing ones as `<TODO>` instead of inventing them. 162 TODO markers, $0.01. | Structured results for every document a tool writes. |
 
 The raw event streams from these runs become the contract-test fixtures in P1, with paths and session IDs removed.
 

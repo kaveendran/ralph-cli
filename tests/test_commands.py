@@ -82,10 +82,16 @@ class Commands(TempDirTestCase):
         self.assertIn("There is no", output)
         self.assertNotIn("Traceback", output)
 
-    def test_legacy_routing(self):
-        code, output = self.ralph("legacy", "no-such-command")
+    def test_workflows_explain_what_is_missing(self):
+        self.project.cr("cr2").plan.unlink()
+        code, output = self.ralph("critique", "--cr", "2")
         self.assertEqual(code, 1)
-        self.assertIn("no original command", output)
+        self.assertIn("cr2 has no plan", output)
+        self.assertIn("ralph start --mode plan --cr cr2", output)
+        code, output = self.ralph("deploy", "critique", "--cr", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("ralph deploy scaffold --cr cr2", output)
+        self.assertNotIn("Traceback", output)
 
     def test_task_mode_commits_only_after_the_gates(self):
         config = Config()

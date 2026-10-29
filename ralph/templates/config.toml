@@ -50,3 +50,10 @@ stale_sync_hours = 12      # remind you to `ralph sync` when your last fetch is 
 # webhook = "https://hooks.slack.com/services/…"   # a JSON POST with a `text` field
 # command = "terminal-notifier -message 'ralph needs you'"   # gets the event as JSON on stdin
 events = ["blocked", "stopped", "complete", "usage_limit"]
+
+# Optional: Claude Code's own OpenTelemetry export for every run ralph starts.
+# Credentials go in OTEL_EXPORTER_OTLP_HEADERS in your environment, not here.
+# [telemetry]
+# otlp_endpoint = "http://localhost:4317"
+# protocol = "grpc"        # grpc | http/json | http/protobuf
+# team = "payments"        # sent as the team.id attribute
