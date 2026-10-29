@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ralph.commands.common import load_project, require_units
 from ralph.errors import RalphError
+from ralph.kernel.lanes import LaneRunner
 from ralph.kernel.loop import Kernel, StartOptions
 from ralph.kernel.modes import dry_run, run_plan, run_task
 from ralph.paths import normalise_cr, resolve_cr
@@ -28,6 +29,8 @@ def register(subparsers) -> None:
     p.add_argument("--review", choices=("off", "p0-and-large", "all"), help="which units get the per-unit review")
     p.add_argument("--dry-run", action="store_true", help="show the next unit's context pack and command; run nothing")
     p.add_argument("--mine", action="store_true", help="only build units you've claimed with 'ralph claim'")
+    p.add_argument("--lanes", type=int, default=1, metavar="N",
+                   help="build up to N independent units at once, each in its own worktree (max 4; costs up to N×)")
     p.add_argument("--allow-main", action="store_true", help="allow running on the default branch")
     p.add_argument("--skip-baseline", action="store_true", help="don't run the gates once before the first unit")
     p.add_argument("--gates-advisory", action="store_true", help="continue even if the baseline gates fail")
@@ -62,4 +65,16 @@ def run(args) -> int:
     require_units(kernel.cr, kernel.store)
     if args.dry_run:
         return dry_run(kernel)
+    if args.lanes > 1:
+        return LaneRunner(kernel, args.lanes, lane_args(args)).run()
     return kernel.run()
+
+
+def lane_args(args) -> list[str]:
+    """The options each lane's own `ralph start` gets from yours."""
+    passed = []
+    for flag, value in (("--model", args.model), ("--max-turns", args.max_turns), ("--max-budget", args.max_budget),
+                        ("--review", args.review)):
+        if value:
+            passed += [flag, str(value)]
+    return passed + (["--allow-version-drift"] if args.allow_version_drift else [])
